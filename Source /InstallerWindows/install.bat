@@ -18,7 +18,8 @@ set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 set "PIP_EXE=%PYTHON_DIR%\Scripts\pip.exe"
 set "PYTHON_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
 set "GET_PIP_URL=https://bootstrap.pypa.io/get-pip.py"
-set "REPO_ZIP=https://github.com/adam77461/vrchat-osc-banner/archive/refs/heads/main.zip"
+set "REPO_ZIP=https://github.com/adam77461/OSC-Banner-for-vrchat/archive/refs/heads/main.zip"
+set "MAIN_URL=https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/main.py"
 
 :: ── Check for required tools ──
 where curl >nul 2>&1
@@ -86,7 +87,7 @@ echo.
 echo  [5/6] Downloading VRChat OSC Banner...
 
 :: Download main.py directly from GitHub raw
-set "MAIN_URL=https://raw.githubusercontent.com/adam77461/vrchat-osc-banner/main/main.py"
+set "MAIN_URL=https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/main.py"
 curl -L --progress-bar "%MAIN_URL%" -o "%APP_DIR%\main.py"
 if errorlevel 1 (
     echo.
