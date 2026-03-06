@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>VRChat OSC Banner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #090c10;
+    --surface:  #0f1318;
+    --card:     #151b22;
+    --border:   #1e2832;
+    --accent:   #3b82f6;
+    --accent2:  #06b6d4;
+    --green:    #22c55e;
+    --red:      #ef4444;
+    --spotify:  #1db954;
+    --text:     #e8edf2;
+    --muted:    #5a6a7a;
+    --mono:     'JetBrains Mono', monospace;
+    --sans:     'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Noise grain overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+  }
+
+  /* ── Header ── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(9,12,16,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .logo-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: pulse-dot 2s infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
+  }
+
+  .logo-text { font-size: 15px; font-weight: 800; letter-spacing: -0.3px; }
+  .logo-sub  { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--mono);
+    transition: all 0.3s;
+  }
+
+  .status-pill.live   { border-color: var(--green); color: var(--green); }
+  .status-pill.stopped { border-color: var(--red); color: var(--red); }
+
+  .status-pill .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status-pill.live .dot { animation: blink 1s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  /* ── Layout ── */
+  main {
+    position: relative;
+    z-index: 1;
+    padding: 12px 14px 80px;
+    max-width: 600px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    animation: fadeUp 0.3s ease both;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .card-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  /* ── Now Sending ── */
+  .now-sending {
+    background: linear-gradient(135deg, #0f1318 0%, #111827 100%);
+    border-color: #1e3a5f;
+  }
+
+  .now-text {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-height: 20px;
+  }
+
+  /* ── Inputs ── */
+  input[type=text], input[type=number] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 9px 12px;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.2s;
+    -webkit-appearance: none;
+  }
+
+  input:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--muted); }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 16px;
+    border-radius: 10px;
+    border: none;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    -webkit-appearance: none;
+    touch-action: manipulation;
+  }
+
+  .btn:active { transform: scale(0.96); }
+
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #2563eb; }
+
+  .btn-green  { background: #166534; color: #fff; }
+  .btn-red    { background: #7f1d1d; color: #fff; }
+  .btn-muted  { background: var(--border); color: var(--text); }
+  .btn-ghost  { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-spotify { background: var(--spotify); color: #000; font-weight: 800; border-radius: 20px; }
+  .btn-spotify:hover { background: #17a349; }
+
+  .btn-sm { padding: 7px 12px; font-size: 12px; border-radius: 8px; }
+  .btn-full { width: 100%; }
+
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Row layout ── */
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row .grow { flex: 1; }
+
+  /* ── Caption list ── */
+  .caption-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+
+  .caption-list::-webkit-scrollbar { width: 3px; }
+  .caption-list::-webkit-scrollbar-track { background: transparent; }
+  .caption-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .caption-row {
+    display: flex;
+    align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    gap: 8px;
+    animation: fadeUp 0.2s ease;
+    transition: background 0.2s, border-color 0.2s;
+  }
+
+  .caption-row.active {
+    background: #0c1f3d;
+    border-color: var(--accent);
+  }
+
+  .caption-icon { font-size: 14px; flex-shrink: 0; }
+
+  .caption-text {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .caption-del {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    line-height: 1;
+    flex-shrink: 0;
+    touch-action: manipulation;
+  }
+
+  .caption-del:active { color: var(--red); background: #3f0d0d; }
+
+  .caption-count {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    text-align: right;
+    margin-top: 4px;
+  }
+
+  /* ── Slider ── */
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--text);
+    cursor: pointer;
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+
+  .slider-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    width: 38px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── Spotify card ── */
+  .spotify-card {
+    background: #080f0b;
+    border-color: #1a3828;
+  }
+
+  .spotify-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .spotify-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--spotify);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .spotify-status {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 4px;
+    min-height: 14px;
+  }
+
+  .spotify-track {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--spotify);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-height: 18px;
+    margin-bottom: 10px;
+  }
+
+  .spotify-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* ── Scan results ── */
+  .scan-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+
+  .scan-host {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    gap: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    touch-action: manipulation;
+  }
+
+  .scan-host:active { background: #0c1f3d; border-color: var(--accent); }
+  .scan-host.osc-open { border-color: #166534; }
+
+  .scan-host-info { flex: 1; overflow: hidden; }
+  .scan-host-ip   { font-family: var(--mono); font-size: 12px; font-weight: 700; }
+  .scan-host-name { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .scan-badge {
+    font-size: 9px;
+    font-family: var(--mono);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .scan-badge.osc  { background: #166534; color: #86efac; }
+  .scan-badge.host { background: var(--border); color: var(--muted); }
+
+  .progress-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    transition: width 0.3s;
+  }
+
+  /* ── Control buttons ── */
+  .control-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .control-row .btn { height: 46px; font-size: 14px; }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    z-index: 999;
+    transition: transform 0.3s ease, opacity 0.3s;
+    opacity: 0;
+    white-space: nowrap;
+  }
+
+  #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+  /* ── Section divider ── */
+  .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  /* ── IP input row ── */
+  .ip-row {
+    display: grid;
+    grid-template-columns: 1fr 80px auto;
+    gap: 6px;
+    align-items: center;
+  }
+
+  /* ── Manual track row ── */
+  .manual-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  /* ── Footer ── */
+  footer {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(9,12,16,0.95);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid var(--border);
+    padding: 8px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .footer-ip { color: var(--accent); }
+
+  /* ── Collapsible sections ── */
+  .collapse-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+    font-family: var(--mono);
+    touch-action: manipulation;
+  }
+
+  .collapsible { overflow: hidden; transition: max-height 0.3s ease; }
+  .collapsible.collapsed { max-height: 0 !important; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <div>
+      <div class="logo-text">OSC Banner</div>
+      <div class="logo-sub">VRChat · by adam77461</div>
+    </div>
+  </div>
+  <div class="status-pill stopped" id="status-pill">
+    <div class="dot"></div>
+    <span id="status-text">Stopped</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Now Sending -->
+  <div class="card now-sending">
+    <div class="card-label">Now Sending</div>
+    <div class="now-text" id="now-text">—</div>
+  </div>
+
+  <!-- VRChat Target -->
+  <div class="card">
+    <div class="section-title">
+      <div class="card-label" style="margin:0">Target</div>
+      <button class="btn btn-sm btn-muted" onclick="startScan()">🔍 Auto-Detect</button>
+    </div>
+    <div class="ip-row">
+      <input type="text" id="ip-input" placeholder="VRChat IP address" value="{{ vrchat_ip }}">
+      <input type="number" id="port-input" placeholder="Port" value="{{ vrchat_port }}" min="1" max="65535">
+      <button class="btn btn-primary btn-sm" onclick="applyTarget()">Apply</button>
+    </div>
+
+    <!-- Scan results (collapsible) -->
+    <div class="collapsible collapsed" id="scan-section" style="max-height:300px">
+      <div class="progress-bar" id="scan-progress-bar" style="display:none">
+        <div class="progress-fill" id="scan-progress-fill" style="width:0%"></div>
+      </div>
+      <div class="scan-list" id="scan-list"></div>
+    </div>
+  </div>
+
+  <!-- Captions -->
+  <div class="card">
+    <div class="section-title">
+      <div class="card-label" style="margin:0">Captions</div>
+      <span class="caption-count" id="caption-count">{{ captions|length }} captions</span>
+    </div>
+    <div class="row" style="margin-bottom:8px">
+      <input type="text" class="grow" id="new-caption" placeholder="New caption… or {time} for clock">
+      <button class="btn btn-primary btn-sm" onclick="addCaption()">+ Add</button>
+    </div>
+    <div class="caption-list" id="caption-list">
+      {% for c in captions %}
+      <div class="caption-row" data-idx="{{ loop.index0 }}">
+        <span class="caption-icon">{{ '⏰' if c == '{time}' else '💬' }}</span>
+        <span class="caption-text">{{ c }}</span>
+        <button class="caption-del" onclick="deleteCaption({{ loop.index0 }})">✕</button>
+      </div>
+      {% endfor %}
+    </div>
+    <div style="display:flex; gap:6px; margin-top:8px">
+      <button class="btn btn-ghost btn-sm btn-full" onclick="clearAll()">Clear All</button>
+    </div>
+  </div>
+
+  <!-- Spotify -->
+  <div class="card spotify-card">
+    <div class="spotify-header">
+      <div class="spotify-label">♫ Spotify</div>
+      {% if spotify_enabled %}
+      <button class="btn btn-sm btn-ghost" onclick="spotifyLogout()">Logout</button>
+      {% else %}
+      <a href="/spotify/login" class="btn btn-sm btn-spotify">Login</a>
+      {% endif %}
+    </div>
+    <div class="spotify-status" id="spotify-status">{{ spotify_status }}</div>
+    <div class="spotify-track" id="spotify-track">
+      {{ spotify_now_playing if spotify_now_playing else '—' }}
+    </div>
+    <div class="spotify-actions">
+      <button class="btn btn-sm {% if spotify_in_banner %}btn-spotify{% else %}btn-muted{% endif %}"
+              id="banner-btn" onclick="toggleBanner()">
+        {{ '✓ In Banner' if spotify_in_banner else '+ Add to Banner' }}
+      </button>
+    </div>
+    <div class="manual-row">
+      <input type="text" id="manual-artist" placeholder="Artist">
+      <input type="text" id="manual-song" placeholder="Song">
+    </div>
+    <button class="btn btn-muted btn-sm btn-full" style="margin-top:6px" onclick="setManual()">Set Manual Track</button>
+  </div>
+
+  <!-- Interval -->
+  <div class="card">
+    <div class="card-label">Interval</div>
+    <div class="slider-row">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">1s</span>
+      <input type="range" id="delay-slider" min="1" max="15" step="0.5" value="{{ delay }}"
+             oninput="updateDelay(this.value)">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">15s</span>
+      <div class="slider-val" id="delay-val">{{ delay }}s</div>
+    </div>
+  </div>
+
+  <!-- Start / Stop -->
+  <div class="control-row">
+    <button class="btn btn-green" id="start-btn" onclick="controlStart()">▶ Start</button>
+    <button class="btn btn-red"   id="stop-btn"  onclick="controlStop()" disabled>■ Stop</button>
+  </div>
+
+</main>
+
+<!-- Footer -->
+<footer>
+  <span>Your IP: <span class="footer-ip">{{ local_ip }}</span></span>
+  <span>OSC /chatbox/input</span>
+  <span>made by adam77461</span>
+</footer>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ── Toast ──
+function toast(msg, duration=2200) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+// ── Status pill ──
+function setStatus(running) {
+  const pill = document.getElementById('status-pill');
+  const text = document.getElementById('status-text');
+  pill.className = 'status-pill ' + (running ? 'live' : 'stopped');
+  text.textContent = running ? 'Live' : 'Stopped';
+  document.getElementById('start-btn').disabled = running;
+  document.getElementById('stop-btn').disabled  = !running;
+}
+
+// ── Target ──
+async function applyTarget() {
+  const ip   = document.getElementById('ip-input').value.trim();
+  const port = document.getElementById('port-input').value;
+  if (!ip) { toast('Enter an IP address'); return; }
+  const r = await post('/target/set', {ip, port: parseInt(port)});
+  if (r.ok) {
+    toast(`✓ Connected to ${ip}:${port}`);
+    document.querySelector('.footer-ip') && (document.querySelector('footer').querySelector('.footer-ip').textContent = ip);
+  } else {
+    toast('✗ ' + r.error);
+  }
+}
+
+// ── Auto-detect scan ──
+let scanPoll;
+async function startScan() {
+  const section = document.getElementById('scan-section');
+  section.classList.remove('collapsed');
+  document.getElementById('scan-list').innerHTML = '<div style="color:var(--muted);font-size:11px;font-family:var(--mono);padding:6px">Scanning network...</div>';
+  document.getElementById('scan-progress-bar').style.display = 'block';
+  await post('/scan/start', {});
+  scanPoll = setInterval(pollScan, 800);
+}
+
+async function pollScan() {
+  const r = await fetch('/scan/status').then(x => x.json());
+  document.getElementById('scan-progress-fill').style.width = r.progress + '%';
+  if (r.results.length > 0) renderScanResults(r.results);
+  if (!r.scanning) {
+    clearInterval(scanPoll);
+    document.getElementById('scan-progress-bar').style.display = 'none';
+    if (r.results.length === 0) {
+      document.getElementById('scan-list').innerHTML = '<div style="color:var(--muted);font-size:11px;font-family:var(--mono);padding:6px">No hosts found. Enter IP manually.</div>';
+    }
+  }
+}
+
+function renderScanResults(hosts) {
+  const list = document.getElementById('scan-list');
+  list.innerHTML = hosts.map(h => `
+    <div class="scan-host ${h.osc ? 'osc-open' : ''}" onclick="selectHost('${h.ip}')">
+      <div class="scan-host-info">
+        <div class="scan-host-ip">${h.ip}</div>
+        ${h.hostname ? `<div class="scan-host-name">${h.hostname}</div>` : ''}
+      </div>
+      <span class="scan-badge ${h.osc ? 'osc' : 'host'}">${h.osc ? 'OSC ✓' : 'host'}</span>
+    </div>
+  `).join('');
+}
+
+function selectHost(ip) {
+  document.getElementById('ip-input').value = ip;
+  document.getElementById('scan-section').classList.add('collapsed');
+  toast(`Selected ${ip} — tap Apply to connect`);
+}
+
+// ── Captions ──
+async function addCaption() {
+  const input = document.getElementById('new-caption');
+  const text  = input.value.trim();
+  if (!text) return;
+  const r = await post('/captions/add', {text});
+  input.value = '';
+  renderCaptions(r.captions);
+  toast('Caption added');
+}
+
+document.getElementById('new-caption').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addCaption();
+});
+
+async function deleteCaption(idx) {
+  const r = await post(`/captions/delete/${idx}`, {});
+  renderCaptions(r.captions);
+}
+
+async function clearAll() {
+  if (!confirm('Clear all captions?')) return;
+  const r = await post('/captions/clear', {});
+  renderCaptions(r.captions);
+  toast('Cleared');
+}
+
+function renderCaptions(captions) {
+  const list  = document.getElementById('caption-list');
+  const count = document.getElementById('caption-count');
+  count.textContent = captions.length + ' captions';
+  list.innerHTML = captions.map((c, i) => `
+    <div class="caption-row" data-idx="${i}">
+      <span class="caption-icon">${c === '{time}' ? '⏰' : '💬'}</span>
+      <span class="caption-text">${escHtml(c)}</span>
+      <button class="caption-del" onclick="deleteCaption(${i})">✕</button>
+    </div>
+  `).join('');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Control ──
+async function controlStart() {
+  const r = await post('/control/start', {});
+  if (r.ok) { setStatus(true); toast('▶ Started'); }
+  else toast('✗ ' + r.error);
+}
+
+async function controlStop() {
+  const r = await post('/control/stop', {});
+  setStatus(false);
+  toast('■ Stopped');
+  document.getElementById('now-text').textContent = '—';
+}
+
+// ── Delay ──
+let delayTimer;
+function updateDelay(val) {
+  document.getElementById('delay-val').textContent = parseFloat(val).toFixed(1) + 's';
+  clearTimeout(delayTimer);
+  delayTimer = setTimeout(() => post('/control/delay', {delay: parseFloat(val)}), 300);
+}
+
+// ── Spotify ──
+async function toggleBanner() {
+  const r = await post('/spotify/banner/toggle', {});
+  const btn = document.getElementById('banner-btn');
+  if (r.in_banner) {
+    btn.textContent = '✓ In Banner';
+    btn.className = 'btn btn-sm btn-spotify';
+    toast('♫ Spotify added to banner');
+  } else {
+    btn.textContent = '+ Add to Banner';
+    btn.className = 'btn btn-sm btn-muted';
+    toast('Spotify removed from banner');
+  }
+}
+
+async function setManual() {
+  const artist = document.getElementById('manual-artist').value.trim();
+  const song   = document.getElementById('manual-song').value.trim();
+  if (!artist && !song) { toast('Enter artist or song name'); return; }
+  const r = await post('/spotify/manual', {artist, song});
+  if (r.ok) {
+    document.getElementById('spotify-track').textContent = r.now_playing;
+    toast('Manual track set');
+  }
+}
+
+async function spotifyLogout() {
+  await post('/spotify/logout', {});
+  location.reload();
+}
+
+// ── State polling ──
+setInterval(async () => {
+  const r = await fetch('/state').then(x => x.json()).catch(() => null);
+  if (!r) return;
+
+  setStatus(r.running);
+
+  // Spotify
+  document.getElementById('spotify-status').textContent = r.spotify_status || '';
+  document.getElementById('spotify-track').textContent  = r.spotify_now_playing || '—';
+
+}, 3000);
+
+// Spotify status fast poll
+setInterval(async () => {
+  if (!{{ 'true' if spotify_enabled else 'false' }}) return;
+  const r = await fetch('/spotify/status').then(x => x.json()).catch(() => null);
+  if (!r) return;
+  document.getElementById('spotify-status').textContent = r.status || '';
+  document.getElementById('spotify-track').textContent  = r.now_playing || '—';
+}, 8000);
+
+// ── Helpers ──
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+// ── Init ──
+setStatus({{ 'true' if running else 'false' }});
+</script>
+</body>
+</html>
