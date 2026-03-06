@@ -18,7 +18,6 @@ set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 set "PIP_EXE=%PYTHON_DIR%\Scripts\pip.exe"
 set "PYTHON_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
 set "GET_PIP_URL=https://bootstrap.pypa.io/get-pip.py"
-set "REPO_ZIP=https://github.com/adam77461/OSC-Banner-for-vrchat/archive/refs/heads/main.zip"
 set "MAIN_URL=https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%%20/main.py"
 
 :: ── Check for required tools ──
@@ -56,13 +55,11 @@ echo        Done.
 echo.
 
 :: ── Enable pip in embedded Python ──
-:: Embedded Python has a ._pth file that blocks site-packages by default
 echo  [3/6] Configuring Python...
 for %%f in ("%PYTHON_DIR%\python*._pth") do (
     powershell -Command "(Get-Content '%%f') -replace '#import site','import site' | Set-Content '%%f'"
 )
 
-:: Download get-pip.py
 set "GET_PIP=%INSTALL_DIR%\get-pip.py"
 curl -L --progress-bar "%GET_PIP_URL%" -o "%GET_PIP%"
 "%PYTHON_EXE%" "%GET_PIP%"
@@ -85,20 +82,16 @@ echo.
 
 :: ── Download app files ──
 echo  [5/6] Downloading VRChat OSC Banner...
-
-:: Download main.py directly from GitHub raw
-set "MAIN_URL=https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%%20/main.py"
 curl -L --progress-bar "%MAIN_URL%" -o "%APP_DIR%\main.py"
 if errorlevel 1 (
     echo.
     echo  [!] Could not download main.py from GitHub.
-    echo      If you're installing from a zip, the file will be copied instead.
+    echo      Trying local fallback...
     goto :copy_local
 )
 goto :create_launcher
 
 :copy_local
-:: Fallback: copy from same folder as this .bat
 set "BAT_DIR=%~dp0"
 if exist "%BAT_DIR%main.py" (
     copy "%BAT_DIR%main.py" "%APP_DIR%\main.py" >nul
@@ -121,25 +114,13 @@ echo cd /d "%APP_DIR%"
 echo start "" "%PYTHON_EXE%" "%APP_DIR%\main.py"
 ) > "%LAUNCHER%"
 
-:: Create Desktop shortcut via PowerShell
+:: Create Desktop shortcut via PowerShell (all on one line)
 set "SHORTCUT=%USERPROFILE%\Desktop\VRChat OSC Banner.lnk"
-powershell -Command ^
-  "$ws = New-Object -ComObject WScript.Shell; ^
-   $s = $ws.CreateShortcut('%SHORTCUT%'); ^
-   $s.TargetPath = '%LAUNCHER%'; ^
-   $s.WorkingDirectory = '%APP_DIR%'; ^
-   $s.Description = 'VRChat OSC Banner by adam77461'; ^
-   $s.Save()"
+powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = '%LAUNCHER%'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
 
-:: Create Start Menu shortcut
+:: Create Start Menu shortcut (all on one line)
 set "START_MENU=%APPDATA%\Microsoft\Windows\Start Menu\Programs\VRChat OSC Banner.lnk"
-powershell -Command ^
-  "$ws = New-Object -ComObject WScript.Shell; ^
-   $s = $ws.CreateShortcut('%START_MENU%'); ^
-   $s.TargetPath = '%LAUNCHER%'; ^
-   $s.WorkingDirectory = '%APP_DIR%'; ^
-   $s.Description = 'VRChat OSC Banner by adam77461'; ^
-   $s.Save()"
+powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%START_MENU%'); $s.TargetPath = '%LAUNCHER%'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
 
 echo        Desktop shortcut created
 echo        Start Menu entry created
@@ -163,14 +144,11 @@ echo.
 echo  ╔══════════════════════════════════════════════════╗
 echo  ║  Installation complete!                          ║
 echo  ║                                                  ║
-echo  ║  ✓ Installed to:                                 ║
-echo  ║    %LOCALAPPDATA%\VRChatOSCBanner
-echo  ║                                                  ║
 echo  ║  ✓ Desktop shortcut created                      ║
 echo  ║  ✓ Start Menu entry created                      ║
 echo  ║                                                  ║
-echo  ║  Launch the app from your Desktop or             ║
-echo  ║  search "VRChat OSC Banner" in Start Menu        ║
+echo  ║  Launch from your Desktop or search              ║
+echo  ║  "VRChat OSC Banner" in Start Menu               ║
 echo  ╚══════════════════════════════════════════════════╝
 echo.
 
