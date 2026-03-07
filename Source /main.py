@@ -725,6 +725,24 @@ status_text.pack(side="left", padx=(0, 10))
 body = ctk.CTkFrame(app, fg_color=SURFACE)
 body.pack(fill="both", expand=True, padx=20, pady=14)
 
+# ── Start / Stop Buttons (top) ──
+btn_frame = ctk.CTkFrame(body, fg_color="transparent")
+btn_frame.pack(fill="x", pady=(0, 8))
+
+start_btn = ctk.CTkButton(
+    btn_frame, text="  Start", font=("Segoe UI", 13, "bold"),
+    fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=10, height=42,
+    command=start_loop
+)
+start_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
+
+stop_btn = ctk.CTkButton(
+    btn_frame, text="  Stop", font=("Segoe UI", 13, "bold"),
+    fg_color="#7f1d1d", hover_color="#991b1b", corner_radius=10, height=42,
+    state="disabled", command=stop_loop
+)
+stop_btn.pack(side="left", expand=True, fill="x", padx=5)
+
 # ── Now Sending ──
 now_card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=58)
 now_card.pack(fill="x", pady=(0, 8))
@@ -896,23 +914,7 @@ delay_val_label = ctk.CTkLabel(delay_row, text="5.0s", font=("Segoe UI", 13, "bo
                                text_color=TEXT_PRIMARY, width=44, anchor="e")
 delay_val_label.pack(side="right")
 
-# ── Action Buttons ──
-btn_frame = ctk.CTkFrame(body, fg_color="transparent")
-btn_frame.pack(fill="x")
 
-start_btn = ctk.CTkButton(
-    btn_frame, text="  Start", font=("Segoe UI", 13, "bold"),
-    fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=10, height=42,
-    command=start_loop
-)
-start_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
-
-stop_btn = ctk.CTkButton(
-    btn_frame, text="  Stop", font=("Segoe UI", 13, "bold"),
-    fg_color="#7f1d1d", hover_color="#991b1b", corner_radius=10, height=42,
-    state="disabled", command=stop_loop
-)
-stop_btn.pack(side="left", expand=True, fill="x", padx=5)
 
 sec_frame = ctk.CTkFrame(body, fg_color="transparent")
 sec_frame.pack(fill="x", pady=(8, 0))
