@@ -149,10 +149,10 @@ echo ^)
 ) > "%LAUNCHER%"
 
 set "SHORTCUT=%USERPROFILE%\Desktop\VRChat OSC Banner.lnk"
-powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = '%LAUNCHER%'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
+powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = 'cmd.exe'; $s.Arguments = '/c \"%LAUNCHER%\"'; $s.WorkingDirectory = '%APP_DIR%'; $s.WindowStyle = 7; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
 
 set "START_MENU=%APPDATA%\Microsoft\Windows\Start Menu\Programs\VRChat OSC Banner.lnk"
-powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%START_MENU%'); $s.TargetPath = '%LAUNCHER%'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
+powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%START_MENU%'); $s.TargetPath = 'cmd.exe'; $s.Arguments = '/c \"%LAUNCHER%\"'; $s.WorkingDirectory = '%APP_DIR%'; $s.WindowStyle = 7; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
 
 set "UNINSTALLER=%INSTALL_DIR%\Uninstall.bat"
 (
