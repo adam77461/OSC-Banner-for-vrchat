@@ -199,10 +199,32 @@ goto :eof
 set "_candidate=%~1"
 if not exist "%_candidate%" goto :eof
 
-:: Get major.minor as a single number e.g. 311 for 3.11
+:: Skip the Windows Store stub — it lives in WindowsApps and just opens the Store
+echo "%_candidate%" | findstr /i "WindowsApps" >nul 2>&1
+if not errorlevel 1 (
+    echo        Skipping — Windows Store stub ^(not a real Python^)
+    goto :eof
+)
+
+:: Also detect Store stub by checking if it exits with code 9009 (store redirect)
+"%_candidate%" --version >nul 2>&1
+if errorlevel 9009 (
+    echo        Skipping — Windows Store stub ^(returned 9009^)
+    goto :eof
+)
+
+:: Get version string
+set "_ver="
 for /f "tokens=2 delims= " %%v in ('"%_candidate%" --version 2^>^&1') do (
     set "_ver=%%v"
 )
+
+:: If version is empty, it's probably the Store stub silently failing
+if not defined _ver (
+    echo        Skipping — could not get version ^(likely Store stub^)
+    goto :eof
+)
+
 :: Extract major and minor
 for /f "tokens=1,2 delims=." %%a in ("!_ver!") do (
     set "_major=%%a"
@@ -220,6 +242,6 @@ if !_major! EQU 3 if !_minor! LSS 10 (
     goto :eof
 )
 
-:: Passed version check
+:: Passed all checks
 set "PYTHON_EXE=%_candidate%"
 goto :eof
