@@ -32,7 +32,7 @@ from tkinter import filedialog
 from pythonosc.udp_client import SimpleUDPClient
 
 # ---------------- CONFIG ----------------
-VRCHAT_IP = "127.0.0.1"
+VRCHAT_IP = "192.168.1.87"
 VRCHAT_PORT = 9000
 DEFAULT_FILE = "captions.json"
 TOKEN_FILE = "spotify_token.json"
@@ -669,9 +669,40 @@ def apply_ip():
 # ================================================================
 app = ctk.CTk()
 app.title("VRChat OSC Banner")
-app.geometry("560x880")
-app.resizable(False, False)
+app.resizable(True, True)
+app.minsize(480, 600)
 app.configure(fg_color=SURFACE)
+
+# ── Restore saved window geometry ──
+GEOMETRY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_geometry.txt")
+
+def save_geometry():
+    try:
+        with open(GEOMETRY_FILE, "w") as f:
+            f.write(app.geometry())
+    except:
+        pass
+
+def load_geometry():
+    try:
+        with open(GEOMETRY_FILE, "r") as f:
+            geo = f.read().strip()
+        if geo:
+            app.geometry(geo)
+            return
+    except:
+        pass
+    # Default: centre on screen at 560x820
+    app.update_idletasks()
+    sw = app.winfo_screenwidth()
+    sh = app.winfo_screenheight()
+    w, h = 560, 820
+    x = (sw - w) // 2
+    y = (sh - h) // 2
+    app.geometry(f"{w}x{h}+{x}+{y}")
+
+load_geometry()
+app.protocol("WM_DELETE_WINDOW", lambda: (save_geometry(), app.destroy()))
 
 # ── Header ──
 header = ctk.CTkFrame(app, fg_color="#0d1117", corner_radius=0, height=56)
@@ -841,7 +872,7 @@ list_scroll = ctk.CTkScrollableFrame(
     body, fg_color=SURFACE, scrollbar_button_color=BORDER,
     scrollbar_button_hover_color=ACCENT, corner_radius=10, height=150
 )
-list_scroll.pack(fill="x", pady=(0, 8))
+list_scroll.pack(fill="both", expand=True, pady=(0, 8))
 list_inner = list_scroll
 
 # ── Delay ──
