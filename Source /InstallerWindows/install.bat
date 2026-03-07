@@ -56,13 +56,25 @@ echo.
 
 :: ── Enable pip in embedded Python ──
 echo  [3/6] Configuring Python...
+
+:: Find and fix the ._pth file — uncomment 'import site'
 for %%f in ("%PYTHON_DIR%\python*._pth") do (
+    echo        Patching: %%f
     powershell -Command "(Get-Content '%%f') -replace '#import site','import site' | Set-Content '%%f'"
+    echo        Verifying patch...
+    powershell -Command "if ((Get-Content '%%f') -match 'import site') { Write-Host '        import site OK' } else { Write-Host '        WARNING: patch may have failed' }"
 )
+
+:: Also manually append Scripts to PATH so pip works
+set "PATH=%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%PATH%"
 
 set "GET_PIP=%INSTALL_DIR%\get-pip.py"
 curl -L --progress-bar "%GET_PIP_URL%" -o "%GET_PIP%"
 "%PYTHON_EXE%" "%GET_PIP%"
+if errorlevel 1 (
+    echo  [!] pip installation failed.
+    pause & exit /b 1
+)
 del "%GET_PIP%"
 echo        pip installed.
 echo.
@@ -71,13 +83,38 @@ echo.
 echo  [4/6] Installing dependencies...
 echo        This may take a minute...
 echo.
-"%PIP_EXE%" install --quiet customtkinter python-osc
+"%PIP_EXE%" install customtkinter python-osc
 if errorlevel 1 (
     echo  [!] Failed to install dependencies.
     pause & exit /b 1
 )
 echo        customtkinter   OK
 echo        python-osc      OK
+echo.
+
+:: ── Verify imports work ──
+echo        Verifying installation...
+"%PYTHON_EXE%" -c "import customtkinter; import pythonosc; print('        imports OK')"
+if errorlevel 1 (
+    echo.
+    echo  [!] Import verification failed.
+    echo      The packages installed but Python cannot find them.
+    echo      This is a known embedded Python issue.
+    echo      Trying fix...
+    echo.
+    :: Force add site-packages to python path via .pth
+    for %%f in ("%PYTHON_DIR%\python*._pth") do (
+        echo %PYTHON_DIR%\Lib\site-packages>> "%%f"
+        echo        Added site-packages path to %%f
+    )
+    :: Retry
+    "%PYTHON_EXE%" -c "import customtkinter; import pythonosc; print('        imports OK after fix')"
+    if errorlevel 1 (
+        echo  [!] Still failing. Installation cannot continue.
+        echo      Please report this issue on GitHub.
+        pause & exit /b 1
+    )
+)
 echo.
 
 :: ── Download app files ──
@@ -97,28 +134,36 @@ if exist "%BAT_DIR%main.py" (
     copy "%BAT_DIR%main.py" "%APP_DIR%\main.py" >nul
     echo        Copied main.py from local folder.
 ) else (
-    echo  [!] main.py not found. Place main.py in the same folder as this installer.
+    echo  [!] main.py not found. Place main.py next to this installer.
     pause & exit /b 1
 )
 
 :create_launcher
 echo.
 
-:: ── Create launcher .bat ──
+:: ── Create launcher that stays open on error ──
 echo  [6/6] Creating launcher and shortcuts...
 
 set "LAUNCHER=%INSTALL_DIR%\Launch VRChat OSC Banner.bat"
 (
 echo @echo off
+echo title VRChat OSC Banner
 echo cd /d "%APP_DIR%"
-echo start "" "%PYTHON_EXE%" "%APP_DIR%\main.py"
+echo echo Starting VRChat OSC Banner...
+echo echo.
+echo "%PYTHON_EXE%" "%APP_DIR%\main.py"
+echo if errorlevel 1 ^(
+echo     echo.
+echo     echo  [ERROR] App crashed. See error above.
+echo     pause
+echo ^)
 ) > "%LAUNCHER%"
 
-:: Create Desktop shortcut via PowerShell (all on one line)
+:: Desktop shortcut
 set "SHORTCUT=%USERPROFILE%\Desktop\VRChat OSC Banner.lnk"
 powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = '%LAUNCHER%'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
 
-:: Create Start Menu shortcut (all on one line)
+:: Start Menu shortcut
 set "START_MENU=%APPDATA%\Microsoft\Windows\Start Menu\Programs\VRChat OSC Banner.lnk"
 powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%START_MENU%'); $s.TargetPath = '%LAUNCHER%'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'VRChat OSC Banner by adam77461'; $s.Save()"
 
@@ -154,7 +199,7 @@ echo.
 
 set /p LAUNCH="  Launch VRChat OSC Banner now? (Y/N): "
 if /i "%LAUNCH%"=="Y" (
-    start "" "%LAUNCHER%"
+    call "%LAUNCHER%"
 )
 
 echo.
