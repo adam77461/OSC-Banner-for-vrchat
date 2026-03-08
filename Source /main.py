@@ -32,7 +32,7 @@ from tkinter import filedialog
 from pythonosc.udp_client import SimpleUDPClient
 
 # ---------------- CONFIG ----------------
-VRCHAT_IP = "192.168.1.87"
+VRCHAT_IP = "127.0.0.1"
 VRCHAT_PORT = 9000
 DEFAULT_FILE = "captions.json"
 TOKEN_FILE = "spotify_token.json"
