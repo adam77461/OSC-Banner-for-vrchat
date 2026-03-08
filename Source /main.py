@@ -32,7 +32,7 @@ from tkinter import filedialog
 from pythonosc.udp_client import SimpleUDPClient
 
 # ---------------- CONFIG ----------------
-VRCHAT_IP = "127.0.0.1"
+VRCHAT_IP = "192.168.1.87"
 VRCHAT_PORT = 9000
 DEFAULT_FILE = "captions.json"
 TOKEN_FILE = "spotify_token.json"
@@ -46,6 +46,101 @@ osc = SimpleUDPClient(VRCHAT_IP, VRCHAT_PORT)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+# ---------------- VERSION ----------------
+APP_VERSION = "1.1.0"
+VERSION_URL  = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/version.txt"
+UPDATE_URL   = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%20/main.py"
+
+def check_for_update(silent=False):
+    """Fetch version.txt from GitHub and compare to APP_VERSION."""
+    try:
+        req = urllib.request.Request(VERSION_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            latest = r.read().decode().strip()
+        if latest != APP_VERSION:
+            return latest   # update available
+        if not silent:
+            app.after(0, lambda: update_status_label.configure(
+                text=f"✓ Up to date (v{APP_VERSION})", text_color=SUCCESS))
+        return None
+    except Exception as e:
+        if not silent:
+            app.after(0, lambda: update_status_label.configure(
+                text="Could not check for updates", text_color=TEXT_MUTED))
+        return None
+
+def do_update(latest_version):
+    """Download new main.py, replace current file, restart."""
+    try:
+        app.after(0, lambda: update_btn.configure(text="Downloading...", state="disabled"))
+        app.after(0, lambda: update_status_label.configure(
+            text=f"Downloading v{latest_version}...", text_color=ACCENT))
+
+        this_file = os.path.abspath(__file__)
+        backup    = this_file + ".bak"
+
+        # Download new version
+        req = urllib.request.Request(UPDATE_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            new_code = r.read()
+
+        # Backup current file
+        import shutil
+        shutil.copy2(this_file, backup)
+
+        # Write new file
+        with open(this_file, "wb") as f:
+            f.write(new_code)
+
+        app.after(0, lambda: update_status_label.configure(
+            text=f"✓ Updated to v{latest_version} — restarting...", text_color=SUCCESS))
+        app.after(1500, _restart_app)
+
+    except Exception as e:
+        app.after(0, lambda: update_status_label.configure(
+            text=f"Update failed: {e}", text_color=DANGER))
+        app.after(0, lambda: update_btn.configure(text="Retry Update", state="normal"))
+
+def _restart_app():
+    save_geometry()
+    import subprocess
+    subprocess.Popen([sys.executable, os.path.abspath(__file__)])
+    app.destroy()
+
+def on_update_btn():
+    update_btn.configure(text="Checking...", state="disabled")
+    update_status_label.configure(text="Checking for updates...", text_color=TEXT_MUTED)
+    def _check():
+        latest = check_for_update(silent=True)
+        if latest:
+            app.after(0, lambda: update_status_label.configure(
+                text=f"Update available: v{APP_VERSION} → v{latest}", text_color=ACCENT))
+            app.after(0, lambda: update_btn.configure(
+                text=f"Install v{latest}", state="normal",
+                fg_color="#166534", hover_color="#14532d"))
+            app.after(0, lambda: update_btn.configure(command=lambda: threading.Thread(
+                target=do_update, args=(latest,), daemon=True).start()))
+        else:
+            app.after(0, lambda: update_status_label.configure(
+                text=f"✓ Already on latest (v{APP_VERSION})", text_color=SUCCESS))
+            app.after(0, lambda: update_btn.configure(text="Check for Updates", state="normal",
+                fg_color=ACCENT, hover_color="#1d4ed8", command=on_update_btn))
+    threading.Thread(target=_check, daemon=True).start()
+
+def auto_check_update():
+    """Silently check on startup — show badge if update available."""
+    def _check():
+        latest = check_for_update(silent=True)
+        if latest:
+            app.after(0, lambda: update_status_label.configure(
+                text=f"⬆ Update available: v{latest}", text_color=ACCENT))
+            app.after(0, lambda: update_btn.configure(
+                text=f"Install v{latest}",
+                fg_color="#166534", hover_color="#14532d",
+                command=lambda: threading.Thread(
+                    target=do_update, args=(latest,), daemon=True).start()))
+    threading.Thread(target=_check, daemon=True).start()
 
 running = False
 captions = []
@@ -934,6 +1029,26 @@ clear_btn = ctk.CTkButton(
 )
 clear_btn.pack(side="left", expand=True, fill="x", padx=5)
 
+# ── Update Card ──
+update_card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=48,
+                            border_width=1, border_color=BORDER)
+update_card.pack(fill="x", pady=(8, 0))
+update_card.pack_propagate(False)
+
+update_btn = ctk.CTkButton(
+    update_card, text="Check for Updates", width=150, height=28,
+    font=("Segoe UI", 11, "bold"),
+    fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=8,
+    command=on_update_btn
+)
+update_btn.place(relx=1.0, x=-12, rely=0.5, anchor="e")
+
+update_status_label = ctk.CTkLabel(
+    update_card, text=f"v{APP_VERSION}", font=("Consolas", 10),
+    text_color=TEXT_MUTED, anchor="w"
+)
+update_status_label.place(x=14, rely=0.5, anchor="w")
+
 # ── Footer ──
 footer = ctk.CTkFrame(app, fg_color="#0d1117", corner_radius=0, height=30)
 footer.pack(fill="x", side="bottom")
@@ -963,5 +1078,8 @@ if load_tokens() and spotify_refresh_token:
     spotify_login_btn.configure(text="Connected!", fg_color="#166534")
     spotify_status_label.configure(text="Session restored — polling every 5s", text_color=SUCCESS)
     start_spotify_poller()
+
+# Auto-check for updates on launch
+app.after(2000, auto_check_update)
 
 app.mainloop()
