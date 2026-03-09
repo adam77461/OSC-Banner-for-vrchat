@@ -23,9 +23,11 @@ import webbrowser
 import urllib.parse
 import urllib.request
 import hashlib
+import base64
 import secrets as _secrets
 import http.server
 import socketserver
+import socket as socket_module
 from datetime import datetime
 import customtkinter as ctk
 from tkinter import filedialog
@@ -42,13 +44,20 @@ SPOTIFY_CLIENT_ID = "690ecc75dfae468e9e8dc3a4697609fc"
 SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 SPOTIFY_SCOPE = "user-read-currently-playing user-read-playback-state"
 
+# Discord OAuth — PKCE flow, no client secret needed
+# Enable PUBLIC_OAUTH2_CLIENT flag in Discord Developer Portal -> OAuth2
+DISCORD_CLIENT_ID    = "1479680460979310727"
+DISCORD_REDIRECT_URI = "http://127.0.0.1:8889/callback"
+DISCORD_SCOPE        = "identify guilds guilds.members.read"
+DISCORD_TOKEN_FILE   = "discord_token.json"
+
 osc = SimpleUDPClient(VRCHAT_IP, VRCHAT_PORT)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ---------------- VERSION ----------------
-APP_VERSION = "1.1.1"
+APP_VERSION = "2.0.0"
 VERSION_URL  = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/version.txt"
 UPDATE_URL   = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%20/main.py"
 
@@ -109,37 +118,17 @@ def _restart_app():
     app.destroy()
 
 def on_update_btn():
-    update_btn.configure(text="Checking...", state="disabled")
-    update_status_label.configure(text="Checking for updates...", text_color=TEXT_MUTED)
-    def _check():
-        latest = check_for_update(silent=True)
-        if latest:
-            app.after(0, lambda: update_status_label.configure(
-                text=f"Update available: v{APP_VERSION} → v{latest}", text_color=ACCENT))
-            app.after(0, lambda: update_btn.configure(
-                text=f"Install v{latest}", state="normal",
-                fg_color="#166534", hover_color="#14532d"))
-            app.after(0, lambda: update_btn.configure(command=lambda: threading.Thread(
-                target=do_update, args=(latest,), daemon=True).start()))
-        else:
-            app.after(0, lambda: update_status_label.configure(
-                text=f"✓ Already on latest (v{APP_VERSION})", text_color=SUCCESS))
-            app.after(0, lambda: update_btn.configure(text="Check for Updates", state="normal",
-                fg_color=ACCENT, hover_color="#1d4ed8", command=on_update_btn))
-    threading.Thread(target=_check, daemon=True).start()
+    """Legacy — now handled inside settings popup."""
+    open_settings()
 
 def auto_check_update():
-    """Silently check on startup — show badge if update available."""
+    """Silently check on startup — show badge on settings gear if update available."""
     def _check():
         latest = check_for_update(silent=True)
         if latest:
-            app.after(0, lambda: update_status_label.configure(
-                text=f"⬆ Update available: v{latest}", text_color=ACCENT))
-            app.after(0, lambda: update_btn.configure(
-                text=f"Install v{latest}",
-                fg_color="#166534", hover_color="#14532d",
-                command=lambda: threading.Thread(
-                    target=do_update, args=(latest,), daemon=True).start()))
+            # Flash the settings button to hint update available
+            app.after(0, lambda: settings_btn.configure(
+                text="⚙✦", text_color=ACCENT))
     threading.Thread(target=_check, daemon=True).start()
 
 running = False
@@ -156,6 +145,44 @@ spotify_now_playing = ""
 spotify_in_banner = False
 spotify_send_running = False
 _auth_code_holder = [None]
+
+# Discord state
+discord_token          = None
+discord_refresh_token  = None
+discord_token_expiry   = 0
+discord_enabled        = False
+discord_in_banner      = False
+discord_banner_running = False
+discord_status         = ""        # online/idle/dnd/offline
+discord_username       = ""
+discord_guild          = ""        # current server name
+discord_voice_channel  = ""        # current voice channel
+discord_last_dm        = ""        # last DM received
+_discord_pkce_verifier = None
+_discord_auth_holder   = [None]
+_discord_auth_cancel   = [False]   # set True to abort a waiting auth thread
+
+# Shared source preference — "spotify" or "discord"
+active_source = "last_used"        # overwritten from settings file
+SETTINGS_FILE = "settings.json"
+
+def load_settings():
+    global active_source
+    try:
+        with open(SETTINGS_FILE) as f:
+            d = json.load(f)
+        active_source = d.get("active_source", "spotify")
+    except:
+        active_source = "spotify"
+
+def save_settings():
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump({"active_source": active_source}, f)
+    except:
+        pass
+
+load_settings()
 
 
 def reconnect_osc(ip, port):
@@ -201,10 +228,11 @@ _pkce_verifier = None
 _auth_code_holder = [None]
 
 def _generate_pkce_pair():
-    """Generate a code_verifier and its SHA-256 code_challenge."""
-    verifier = _secrets.token_urlsafe(64)
-    digest = hashlib.sha256(verifier.encode()).digest()
-    import base64
+    """Generate a code_verifier and SHA-256 code_challenge per RFC 7636."""
+    import base64, os as _os
+    raw       = _os.urandom(32)
+    verifier  = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    digest    = hashlib.sha256(verifier.encode("ascii")).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     return verifier, challenge
 
@@ -364,6 +392,7 @@ def start_auth_server(callback):
         # Allow address reuse so relaunching doesn't get "port in use"
         socketserver.TCPServer.allow_reuse_address = True
         with socketserver.TCPServer(("127.0.0.1", 8888), _CallbackHandler) as httpd:
+            httpd.socket.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
             httpd.handle_request()
         code = _auth_code_holder[0]
         if code:
@@ -580,6 +609,444 @@ def use_manual_track():
     spotify_now_playing = "Now Playing: " + " - ".join(parts)
     update_spotify_display(spotify_now_playing)
 
+
+
+
+# ═══════════════════════════════════════════════════════
+# DISCORD INTEGRATION
+# ═══════════════════════════════════════════════════════
+
+def _discord_generate_pkce():
+    import base64, os as _os
+    # Exact method confirmed working — 32 urandom bytes -> base64url no padding
+    raw       = _os.urandom(32)
+    verifier  = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    digest    = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
+
+def discord_save_tokens():
+    try:
+        with open(DISCORD_TOKEN_FILE, "w") as f:
+            json.dump({
+                "access_token":  discord_token,
+                "refresh_token": discord_refresh_token,
+                "expiry":        discord_token_expiry
+            }, f)
+    except:
+        pass
+
+def discord_load_tokens():
+    global discord_token, discord_refresh_token, discord_token_expiry
+    try:
+        with open(DISCORD_TOKEN_FILE) as f:
+            d = json.load(f)
+        discord_token         = d.get("access_token")
+        discord_refresh_token = d.get("refresh_token")
+        discord_token_expiry  = d.get("expiry", 0)
+        return True
+    except:
+        return False
+
+def discord_refresh():
+    global discord_token, discord_token_expiry, discord_refresh_token
+    if not discord_refresh_token:
+        return False
+    # Refresh using PKCE — no client_secret needed (PUBLIC_OAUTH2_CLIENT flag)
+    data = urllib.parse.urlencode({
+        "grant_type":    "refresh_token",
+        "refresh_token": discord_refresh_token,
+        "client_id":     DISCORD_CLIENT_ID,
+    }).encode()
+    req = urllib.request.Request(
+        "https://discord.com/api/oauth2/token", data=data,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "VRChatOSCBanner/1.0 (https://github.com/adam77461/OSC-Banner-for-vrchat)",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            res = json.loads(r.read())
+        discord_token         = res["access_token"]
+        discord_token_expiry  = time.time() + res.get("expires_in", 604800) - 60
+        if "refresh_token" in res:
+            discord_refresh_token = res["refresh_token"]
+        discord_save_tokens()
+        return True
+    except:
+        return False
+
+def discord_ensure_token():
+    if time.time() >= discord_token_expiry:
+        return discord_refresh()
+    return discord_token is not None
+
+def discord_api(endpoint):
+    """GET from Discord API with current token."""
+    print(f"[Discord] API call: {endpoint}, token={'set' if discord_token else 'NONE'}, expiry={discord_token_expiry:.0f}, now={time.time():.0f}")
+    if not discord_token:
+        print(f"[Discord] No token — skipping API call")
+        return None
+    # Only refresh if token is actually expired (not on first call)
+    if discord_token_expiry > 0 and time.time() >= discord_token_expiry:
+        print(f"[Discord] Token expired, refreshing...")
+        if not discord_refresh():
+            return None
+    req = urllib.request.Request(
+        f"https://discord.com/api/v10{endpoint}",
+        headers={
+            "Authorization": f"Bearer {discord_token}",
+            "User-Agent": "VRChatOSCBanner/1.0",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"[Discord] API {endpoint} HTTP {e.code}: {body}")
+        app.after(0, lambda c=e.code: discord_status_label.configure(
+            text=f"Discord API error {c}", text_color=DANGER))
+        return None
+    except Exception as ex:
+        print(f"[Discord] API {endpoint} error: {ex}")
+        return None
+
+def discord_fetch_status():
+    """Fetch user identity, guilds, voice state."""
+    global discord_username, discord_status, discord_guild, discord_voice_channel
+    # Identity
+    me = discord_api("/users/@me")
+    print(f"[Discord] /users/@me response: {me}")
+    if not me:
+        return
+    discord_username = me.get("global_name") or me.get("username", "")
+    # Guilds
+    guilds = discord_api("/users/@me/guilds") or []
+    print(f"[Discord] guilds count: {len(guilds)}")
+    if guilds:
+        discord_guild = guilds[0].get("name", "")
+    print(f"[Discord] username={discord_username} guild={discord_guild}")
+    _build_discord_banner_text()
+
+def _build_discord_banner_text():
+    """Assemble the text to send to VRChat from Discord info."""
+    global discord_status
+    parts = []
+    if discord_username:
+        parts.append(f"Discord: {discord_username}")
+    if discord_guild:
+        parts.append(f"In: {discord_guild}")
+    if discord_voice_channel:
+        parts.append(f"VC: {discord_voice_channel}")
+    if discord_last_dm:
+        parts.append(f"DM: {discord_last_dm[:30]}")
+    discord_status = " | ".join(parts) if parts else ""
+    if discord_status:
+        app.after(0, lambda: discord_info_label.configure(
+            text=discord_status[:60], text_color="#5865f2"))
+
+class _DiscordCallbackHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        if "code" in params:
+            _discord_auth_holder[0] = params["code"][0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body style='background:#111827;color:#f9fafb;"
+                b"font-family:sans-serif;display:flex;align-items:center;"
+                b"justify-content:center;height:100vh;margin:0'>"
+                b"<h2>&#128172; Connected to Discord! You can close this tab.</h2>"
+                b"</body></html>"
+            )
+        else:
+            self.send_response(400)
+            self.end_headers()
+    def log_message(self, *a): pass
+
+# Hardcoded fallback URL (no PKCE challenge — use if browser doesn't open)
+DISCORD_FALLBACK_URL = (
+    "https://discord.com/oauth2/authorize"
+    "?client_id=1479680460979310727"
+    "&response_type=code"
+    "&redirect_uri=http%3A%2F%2F127.0.0.1%3A8889%2Fcallback"
+    "&scope=identify+guilds+guilds.members.read"
+)
+
+def _show_secret_prompt():
+    """Prompt user to enter their Discord client secret — saved locally, never to GitHub."""
+    win = ctk.CTkToplevel(app)
+    win.title("Discord Client Secret")
+    win.geometry("460x220")
+    win.configure(fg_color=SURFACE)
+    win.grab_set()
+
+    ctk.CTkLabel(win, text="Enter your Discord Client Secret",
+                 font=("Segoe UI", 13, "bold"), text_color=TEXT_PRIMARY).pack(pady=(18, 4))
+    ctk.CTkLabel(win,
+        text="Found at: discord.com/developers  >  Your App  >  OAuth2  |  Saved locally only, never uploaded.",
+        font=("Segoe UI", 10), text_color=TEXT_MUTED, justify="center").pack(pady=(0, 10))
+
+    secret_entry = ctk.CTkEntry(win, placeholder_text="Client Secret",
+                                 font=("Consolas", 12), fg_color=CARD,
+                                 border_color=BORDER, text_color=TEXT_PRIMARY,
+                                 show="*", width=380, height=34)
+    secret_entry.pack(padx=20)
+
+    def save_and_login():
+        global DISCORD_CLIENT_SECRET
+        secret = secret_entry.get().strip()
+        if not secret:
+            return
+        try:
+            with open(DISCORD_SECRET_FILE, "w") as f:
+                f.write(secret)
+            DISCORD_CLIENT_SECRET = secret
+            win.destroy()
+            do_discord_login()
+        except Exception as e:
+            ctk.CTkLabel(win, text=f"Save failed: {e}", text_color=DANGER).pack()
+
+    ctk.CTkButton(win, text="Save & Login", width=160, height=34,
+                  fg_color=DISCORD_BLUE, hover_color="#4338ca",
+                  font=("Segoe UI", 12, "bold"),
+                  command=save_and_login).pack(pady=12)
+
+def do_discord_login():
+    global _discord_pkce_verifier
+    # Cancel any previous auth attempt still waiting on port 8889
+    _discord_auth_cancel[0] = True
+    _discord_auth_holder[0] = None
+    import time as _time; _time.sleep(0.1)   # let old thread notice cancel
+    _discord_auth_cancel[0] = False
+    verifier, challenge = _discord_generate_pkce()
+    _discord_pkce_verifier = verifier
+
+    # PKCE flow — no client_secret needed
+    # Requires PUBLIC_OAUTH2_CLIENT flag in Discord Developer Portal
+    # prompt=consent forces Discord to show fresh auth every time (busts browser cache)
+    # state nonce prevents any cached redirect from a previous attempt
+    state = base64.urlsafe_b64encode(os.urandom(8)).rstrip(b"=").decode()
+    params = urllib.parse.urlencode({
+        "client_id":             DISCORD_CLIENT_ID,
+        "response_type":         "code",
+        "redirect_uri":          DISCORD_REDIRECT_URI,
+        "scope":                 DISCORD_SCOPE,
+        "code_challenge_method": "S256",
+        "code_challenge":        challenge,
+        "prompt":                "consent",
+        "state":                 state,
+    })
+    auth_url = f"https://discord.com/oauth2/authorize?{params}"
+    print(f"[Discord] Auth URL challenge={challenge}")
+
+    opened = False
+    try:
+        webbrowser.open(auth_url)
+        opened = True
+    except:
+        pass
+
+    if opened:
+        discord_login_btn.configure(text="Authorizing...", state="disabled")
+        discord_status_label.configure(
+            text="Browser opened — authorize then return here",
+            text_color=TEXT_MUTED)
+    else:
+        # Browser failed — show fallback URL and copy button
+        discord_login_btn.configure(text="Authorizing...", state="disabled")
+        discord_status_label.configure(
+            text="Browser didn't open — click Copy URL below",
+            text_color=ACCENT)
+        app.after(0, _show_fallback_url)
+
+    # Pass verifier directly into thread so it can't be stomped by a re-login
+    threading.Thread(target=_discord_auth_server, args=(verifier,), daemon=True).start()
+
+def _show_fallback_url():
+    """Show a copyable fallback URL dialog if browser didn't open."""
+    import tkinter as tk
+    win = ctk.CTkToplevel(app)
+    win.title("Discord Login URL")
+    win.geometry("520x180")
+    win.configure(fg_color=SURFACE)
+    win.grab_set()
+
+    ctk.CTkLabel(win, text="Open this URL in your browser to authorize:",
+                 font=("Segoe UI", 11), text_color=TEXT_MUTED).pack(pady=(16, 6))
+
+    url_box = ctk.CTkEntry(win, font=("Consolas", 9), fg_color=CARD,
+                            border_color=BORDER, text_color=TEXT_PRIMARY,
+                            width=480, height=36)
+    url_box.pack(padx=16)
+    url_box.insert(0, DISCORD_FALLBACK_URL)
+    url_box.configure(state="readonly")
+
+    def copy_url():
+        app.clipboard_clear()
+        app.clipboard_append(DISCORD_FALLBACK_URL)
+        copy_btn.configure(text="✓ Copied!")
+        win.after(1500, lambda: copy_btn.configure(text="Copy URL"))
+
+    copy_btn = ctk.CTkButton(win, text="Copy URL", width=120, height=30,
+                              fg_color=ACCENT, hover_color="#1d4ed8",
+                              font=("Segoe UI", 11, "bold"),
+                              command=copy_url)
+    copy_btn.pack(pady=10)
+
+    ctk.CTkLabel(win, text="After authorizing in browser, close this window.",
+                 font=("Segoe UI", 9), text_color=TEXT_MUTED).pack()
+
+def _discord_auth_server(verifier):
+    global discord_token, discord_refresh_token, discord_token_expiry, discord_enabled
+    print(f"[Discord] Auth server started with verifier={verifier} challenge should be={__import__('base64').urlsafe_b64encode(__import__('hashlib').sha256(verifier.encode('ascii')).digest()).rstrip(b'=').decode()}")
+    try:
+        socketserver.TCPServer.allow_reuse_address = True
+        with socketserver.TCPServer(("127.0.0.1", 8889), _DiscordCallbackHandler) as srv:
+            srv.socket.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+            srv.timeout = 120
+            srv.handle_request()
+        code = _discord_auth_holder[0]
+        print(f"[Discord] Code received (full): '{code}' len={len(code) if code else 0}")
+        if _discord_auth_cancel[0]:
+            print("[Discord] Auth cancelled — stale thread exiting")
+            return
+        if not code:
+            app.after(0, lambda: discord_status_label.configure(
+                text="Auth cancelled", text_color=DANGER))
+            app.after(0, lambda: discord_login_btn.configure(
+                text="Login with Discord", state="normal"))
+            return
+        # Exchange code using PKCE verifier passed directly from login function
+        print(f"[Discord] Exchanging code with verifier={verifier} (len={len(verifier)})")
+        print(f"[Discord] Code length: {len(code)}")
+        # Build POST body manually — code_verifier must NOT be percent-encoded
+        # urllib.parse.urlencode encodes - and _ which breaks Discord PKCE
+        body_parts = [
+            f"grant_type=authorization_code",
+            f"code={urllib.parse.quote(code, safe='')}",
+            f"redirect_uri={urllib.parse.quote(DISCORD_REDIRECT_URI, safe='')}",
+            f"client_id={DISCORD_CLIENT_ID}",
+            f"code_verifier={verifier}",  # verifier is already safe chars only
+        ]
+        data = "&".join(body_parts).encode("ascii")
+        print(f"[Discord] POST body: {data.decode()}")
+        req = urllib.request.Request(
+            "https://discord.com/api/oauth2/token", data=data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "VRChatOSCBanner/1.0 (https://github.com/adam77461/OSC-Banner-for-vrchat)",
+            }
+        )
+        # Flat try/except — HTTPError caught first with full body printed
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                raw = r.read()
+            print(f"[Discord] Token response: {raw.decode()}")
+            res = json.loads(raw)
+        except urllib.error.HTTPError as http_err:
+            body = http_err.read().decode()
+            print(f"[Discord] Token exchange HTTP {http_err.code}")
+            print(f"[Discord] Response headers: {dict(http_err.headers)}")
+            print(f"[Discord] Response body: {body}")
+            try:
+                err_json = json.loads(body)
+                msg = err_json.get("error_description") or err_json.get("error") or f"HTTP {http_err.code}"
+            except:
+                msg = f"HTTP {http_err.code}: {body[:80]}"
+            app.after(0, lambda m=msg: discord_status_label.configure(
+                text=f"Auth failed: {m}", text_color=DANGER))
+            app.after(0, lambda: discord_login_btn.configure(
+                text="Login with Discord", state="normal"))
+            return
+        except Exception as ex:
+            print(f"[Discord] Request error: {type(ex).__name__}: {ex}")
+            app.after(0, lambda m=str(ex): discord_status_label.configure(
+                text=f"Request error: {m}", text_color=DANGER))
+            app.after(0, lambda: discord_login_btn.configure(
+                text="Login with Discord", state="normal"))
+            return
+
+        if "access_token" not in res:
+            print(f"[Discord] Unexpected response: {res}")
+            app.after(0, lambda: discord_status_label.configure(
+                text=f"Bad response: {res.get('error', 'unknown')}", text_color=DANGER))
+            app.after(0, lambda: discord_login_btn.configure(
+                text="Login with Discord", state="normal"))
+            return
+
+        discord_token         = res["access_token"]
+        discord_refresh_token = res.get("refresh_token")
+        discord_token_expiry  = time.time() + res.get("expires_in", 604800) - 60
+        discord_enabled       = True
+        discord_save_tokens()
+        print(f"[Discord] Login SUCCESS — token saved")
+        def _on_success():
+            try:
+                discord_login_btn.configure(text="Connected!", fg_color="#3730a3", state="normal")
+                discord_status_label.configure(text="Connected! Fetching profile...", text_color="#818cf8")
+                discord_info_label.configure(text="Loading...", text_color="#818cf8")
+            except Exception as ui_err:
+                print(f"[Discord] UI update error: {ui_err}")
+        app.after(0, _on_success)
+        start_discord_poller()
+    except Exception as e:
+        import traceback
+        print(f"[Discord] Outer exception: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        app.after(0, lambda err=str(e): discord_status_label.configure(
+            text=f"Auth error: {err}", text_color=DANGER))
+        app.after(0, lambda: discord_login_btn.configure(
+            text="Login with Discord", state="normal"))
+
+_discord_poll_running = [False]
+
+def start_discord_poller():
+    if not _discord_poll_running[0]:
+        _discord_poll_running[0] = True
+        threading.Thread(target=_discord_poll_loop, daemon=True).start()
+
+def _discord_poll_loop():
+    while _discord_poll_running[0]:
+        discord_fetch_status()
+        time.sleep(15)
+
+def toggle_discord_banner():
+    global discord_in_banner, discord_banner_running
+    discord_in_banner = not discord_in_banner
+    if discord_in_banner:
+        discord_banner_btn.configure(
+            text="✓ In Banner", fg_color="#4338ca",
+            hover_color="#3730a3", text_color="#fff")
+        if not discord_banner_running:
+            discord_banner_running = True
+            threading.Thread(target=_discord_banner_loop, daemon=True).start()
+    else:
+        discord_in_banner      = False
+        discord_banner_running = False
+        discord_banner_btn.configure(
+            text="+ Add to Banner", fg_color=BORDER,
+            hover_color="#4b5563", text_color=TEXT_PRIMARY)
+        app.after(0, lambda: discord_status_label.configure(
+            text="Banner disabled", text_color=TEXT_MUTED))
+
+def _discord_banner_loop():
+    global discord_banner_running
+    while discord_in_banner and discord_banner_running:
+        text = discord_status
+        if text:
+            send_caption(text)
+            app.after(0, lambda t=text: discord_status_label.configure(
+                text=f"Sending: {t[:40]}", text_color="#818cf8"))
+        else:
+            app.after(0, lambda: discord_status_label.configure(
+                text="Waiting for Discord data...", text_color=TEXT_MUTED))
+        time.sleep(30)
+    discord_banner_running = False
 
 # ---------------- MAIN CAPTION LOOP ----------------
 current_caption_index = [0]
@@ -799,6 +1266,109 @@ def load_geometry():
 load_geometry()
 app.protocol("WM_DELETE_WINDOW", lambda: (save_geometry(), app.destroy()))
 
+# ── Settings Popup ──
+def open_settings():
+    win = ctk.CTkToplevel(app)
+    win.title("Settings")
+    win.geometry("420x520")
+    win.configure(fg_color=SURFACE)
+    win.grab_set()
+    win.resizable(False, False)
+
+    ctk.CTkLabel(win, text="⚙  Settings", font=("Segoe UI", 16, "bold"),
+                 text_color=TEXT_PRIMARY).pack(pady=(18, 14))
+
+    # ── Load JSON ──
+    section = ctk.CTkFrame(win, fg_color=CARD, corner_radius=10)
+    section.pack(fill="x", padx=20, pady=(0, 10))
+    ctk.CTkLabel(section, text="CAPTIONS FILE", font=("Segoe UI", 9, "bold"),
+                 text_color=TEXT_MUTED).pack(anchor="w", padx=14, pady=(10, 4))
+    ctk.CTkButton(section, text="📂  Load JSON File", height=34,
+                  font=("Segoe UI", 12), fg_color=BORDER, hover_color="#4b5563",
+                  text_color=TEXT_PRIMARY, corner_radius=8,
+                  command=lambda: (load_file(), win.focus())).pack(fill="x", padx=14, pady=(0, 10))
+
+    # ── Clear All ──
+    ctk.CTkButton(section, text="🗑  Clear All Captions", height=34,
+                  font=("Segoe UI", 12), fg_color="transparent", hover_color="#374151",
+                  text_color=DANGER, corner_radius=8, border_width=1, border_color="#7f1d1d",
+                  command=lambda: (clear_all(), win.focus())).pack(fill="x", padx=14, pady=(0, 14))
+
+    # ── VRChat Target ──
+    tgt = ctk.CTkFrame(win, fg_color=CARD, corner_radius=10)
+    tgt.pack(fill="x", padx=20, pady=(0, 10))
+    ctk.CTkLabel(tgt, text="VRCHAT TARGET", font=("Segoe UI", 9, "bold"),
+                 text_color=TEXT_MUTED).pack(anchor="w", padx=14, pady=(10, 4))
+    tgt_row = ctk.CTkFrame(tgt, fg_color="transparent")
+    tgt_row.pack(fill="x", padx=14, pady=(0, 12))
+    _ip = ctk.CTkEntry(tgt_row, placeholder_text="IP Address",
+                       font=("Consolas", 12), fg_color=SURFACE, border_color=BORDER,
+                       border_width=1, text_color=TEXT_PRIMARY,
+                       placeholder_text_color=TEXT_MUTED, width=170, height=30, corner_radius=6)
+    _ip.insert(0, ip_entry.get())
+    _ip.pack(side="left", padx=(0, 6))
+    _port = ctk.CTkEntry(tgt_row, placeholder_text="Port",
+                         font=("Consolas", 12), fg_color=SURFACE, border_color=BORDER,
+                         border_width=1, text_color=TEXT_PRIMARY,
+                         placeholder_text_color=TEXT_MUTED, width=80, height=30, corner_radius=6)
+    _port.insert(0, port_entry.get())
+    _port.pack(side="left", padx=(0, 6))
+    def _apply_target():
+        ip_entry.delete(0, "end"); ip_entry.insert(0, _ip.get())
+        port_entry.delete(0, "end"); port_entry.insert(0, _port.get())
+        apply_target()
+        ctk.CTkLabel(tgt_row, text="✓", text_color=SUCCESS,
+                     font=("Segoe UI", 14, "bold")).pack(side="left")
+    ctk.CTkButton(tgt_row, text="Apply", width=64, height=30,
+                  font=("Segoe UI", 11), fg_color=ACCENT, hover_color="#1d4ed8",
+                  text_color="#fff", corner_radius=6,
+                  command=_apply_target).pack(side="left")
+
+    # ── Update ──
+    upd = ctk.CTkFrame(win, fg_color=CARD, corner_radius=10)
+    upd.pack(fill="x", padx=20, pady=(0, 10))
+    ctk.CTkLabel(upd, text="APP UPDATE", font=("Segoe UI", 9, "bold"),
+                 text_color=TEXT_MUTED).pack(anchor="w", padx=14, pady=(10, 4))
+    upd_row = ctk.CTkFrame(upd, fg_color="transparent")
+    upd_row.pack(fill="x", padx=14, pady=(0, 12))
+    upd_status = ctk.CTkLabel(upd_row, text=f"v{APP_VERSION}",
+                               font=("Consolas", 10), text_color=TEXT_MUTED, anchor="w")
+    upd_status.pack(side="left", expand=True, fill="x")
+
+    def _check_update():
+        upd_btn.configure(text="Checking...", state="disabled")
+        def _do():
+            latest = check_for_update(silent=True)
+            if latest:
+                app.after(0, lambda: upd_status.configure(
+                    text=f"Update available: v{APP_VERSION} → v{latest}", text_color=ACCENT))
+                app.after(0, lambda: upd_btn.configure(
+                    text=f"Install v{latest}", state="normal",
+                    fg_color="#166534", hover_color="#14532d",
+                    command=lambda: threading.Thread(
+                        target=do_update, args=(latest,), daemon=True).start()))
+            else:
+                app.after(0, lambda: upd_status.configure(
+                    text=f"✓ Up to date (v{APP_VERSION})", text_color=SUCCESS))
+                app.after(0, lambda: upd_btn.configure(
+                    text="Check for Updates", state="normal",
+                    fg_color=ACCENT, hover_color="#1d4ed8",
+                    command=_check_update))
+        threading.Thread(target=_do, daemon=True).start()
+
+    upd_btn = ctk.CTkButton(upd_row, text="Check for Updates", width=150, height=28,
+                             font=("Segoe UI", 11, "bold"),
+                             fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=8,
+                             command=_check_update)
+    upd_btn.pack(side="right")
+
+    # ── Close ──
+    ctk.CTkButton(win, text="Close", height=36,
+                  font=("Segoe UI", 12, "bold"),
+                  fg_color=BORDER, hover_color="#4b5563",
+                  text_color=TEXT_PRIMARY, corner_radius=8,
+                  command=win.destroy).pack(fill="x", padx=20, pady=(4, 18))
+
 # ── Header ──
 header = ctk.CTkFrame(app, fg_color="#0d1117", corner_radius=0, height=56)
 header.pack(fill="x")
@@ -806,85 +1376,185 @@ header.pack_propagate(False)
 
 ctk.CTkLabel(header, text="●", font=("Segoe UI", 18), text_color=ACCENT).place(x=20, rely=0.5, anchor="w")
 ctk.CTkLabel(header, text="OSC Banner", font=("Segoe UI", 15, "bold"), text_color=TEXT_PRIMARY).place(x=42, rely=0.5, anchor="w")
-ctk.CTkLabel(header, text="VRChat Chatbox Controller", font=("Segoe UI", 11), text_color=TEXT_MUTED).place(x=152, rely=0.5, anchor="w")
 
-status_frame = ctk.CTkFrame(header, fg_color="#1f2937", corner_radius=20, height=28)
-status_frame.place(relx=1.0, x=-16, rely=0.5, anchor="e")
-status_frame.pack_propagate(False)
-status_dot = ctk.CTkLabel(status_frame, text="●", font=("Segoe UI", 11), text_color=DANGER, width=16)
-status_dot.pack(side="left", padx=(8, 2))
-status_text = ctk.CTkLabel(status_frame, text="Stopped", font=("Segoe UI", 11, "bold"), text_color=DANGER, width=56)
-status_text.pack(side="left", padx=(0, 10))
+# Start / Stop in header
+start_btn = ctk.CTkButton(
+    header, text="▶  Start", font=("Segoe UI", 11, "bold"),
+    fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=8, height=30, width=90,
+    command=start_loop
+)
+start_btn.place(relx=0.5, x=-52, rely=0.5, anchor="center")
+
+stop_btn = ctk.CTkButton(
+    header, text="■  Stop", font=("Segoe UI", 11, "bold"),
+    fg_color="#7f1d1d", hover_color="#991b1b", corner_radius=8, height=30, width=90,
+    state="disabled", command=stop_loop
+)
+stop_btn.place(relx=0.5, x=52, rely=0.5, anchor="center")
+
+# ⚙ Settings gear button
+settings_btn = ctk.CTkButton(
+    header, text="⚙", font=("Segoe UI", 16), width=36, height=36,
+    fg_color="transparent", hover_color="#1f2937",
+    text_color=TEXT_MUTED, corner_radius=8,
+    command=open_settings
+)
+settings_btn.place(relx=1.0, x=-52, rely=0.5, anchor="center")
+
+# (status pill moved below Now Sending card)
 
 # ── Body ──
 body = ctk.CTkFrame(app, fg_color=SURFACE)
 body.pack(fill="both", expand=True, padx=20, pady=14)
 
-# ── Start / Stop Buttons (top) ──
-btn_frame = ctk.CTkFrame(body, fg_color="transparent")
-btn_frame.pack(fill="x", pady=(0, 8))
-
-start_btn = ctk.CTkButton(
-    btn_frame, text="  Start", font=("Segoe UI", 13, "bold"),
-    fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=10, height=42,
-    command=start_loop
-)
-start_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
-
-stop_btn = ctk.CTkButton(
-    btn_frame, text="  Stop", font=("Segoe UI", 13, "bold"),
-    fg_color="#7f1d1d", hover_color="#991b1b", corner_radius=10, height=42,
-    state="disabled", command=stop_loop
-)
-stop_btn.pack(side="left", expand=True, fill="x", padx=5)
-
 # ── Now Sending ──
 now_card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=58)
-now_card.pack(fill="x", pady=(0, 8))
+now_card.pack(fill="x", pady=(0, 4))
 now_card.pack_propagate(False)
 ctk.CTkLabel(now_card, text="NOW SENDING", font=("Segoe UI", 9, "bold"), text_color=TEXT_MUTED).place(x=14, y=9)
 now_label = ctk.CTkLabel(now_card, text="—", font=("Segoe UI", 13, "bold"), text_color=ACCENT, anchor="w")
 now_label.place(x=14, y=29)
 
-# ── Spotify Card ──
-spotify_card = ctk.CTkFrame(body, fg_color="#0d1f12", corner_radius=12, height=110,
-                             border_width=1, border_color="#1c3828")
-spotify_card.pack(fill="x", pady=(0, 8))
-spotify_card.pack_propagate(False)
+# ── Live / Stopped status bar (below Now Sending) ──
+status_frame = ctk.CTkFrame(body, fg_color="#1f2937", corner_radius=8, height=28)
+status_frame.pack(fill="x", pady=(0, 8))
+status_frame.pack_propagate(False)
+status_dot = ctk.CTkLabel(status_frame, text="●", font=("Segoe UI", 11), text_color=DANGER)
+status_dot.place(x=14, rely=0.5, anchor="w")
+status_text = ctk.CTkLabel(status_frame, text="Stopped", font=("Segoe UI", 11, "bold"), text_color=DANGER)
+status_text.place(x=32, rely=0.5, anchor="w")
 
-# Top row: icon + label + login btn
-sp_header = ctk.CTkFrame(spotify_card, fg_color="transparent")
+# ══════════════════════════════════════════════════════
+# SOURCE SELECTOR — slide animation between Spotify/Discord
+# ══════════════════════════════════════════════════════
+
+DISCORD_BLUE  = "#5865f2"
+DISCORD_DARK  = "#0d0f1f"
+DISCORD_BORDER= "#1e2040"
+
+# Arrow label between source cards
+source_arrow_label = ctk.CTkLabel(
+    body, text="▼  Switch Source  ▼",
+    font=("Segoe UI", 9, "bold"), text_color=TEXT_MUTED
+)
+source_arrow_label.pack(pady=(0, 4))
+
+# Container that holds both cards side by side — we slide it
+slide_container_outer = ctk.CTkFrame(body, fg_color="transparent")
+slide_container_outer.pack(fill="x", pady=(0, 8))
+
+# Inner frame that is wider than the outer — holds both cards
+slide_inner = ctk.CTkFrame(slide_container_outer, fg_color="transparent")
+slide_inner.place(x=0, y=0, relwidth=2.0, relheight=1.0)
+
+# Build both cards inside slide_inner side by side
+_slide_x     = [0]         # current x offset of slide_inner
+_slide_target= [0]
+_slide_animating = [False]
+_CARD_WIDTH  = 560          # approximate — will be updated on configure
+
+def _animate_slide():
+    cur = _slide_x[0]
+    tgt = _slide_target[0]
+    if abs(cur - tgt) < 2:
+        _slide_x[0] = tgt
+        slide_inner.place_configure(x=tgt)
+        _slide_animating[0] = False
+        return
+    step = (tgt - cur) * 0.25
+    if abs(step) < 1:
+        step = 1 if tgt > cur else -1
+    new_x = cur + step
+    _slide_x[0] = new_x
+    slide_inner.place_configure(x=int(new_x))
+    app.after(16, _animate_slide)
+
+def switch_to_source(source):
+    global active_source
+    active_source = source
+    save_settings()
+    w = slide_container_outer.winfo_width() or 520
+    target = 0 if source == "spotify" else -w
+    _slide_target[0] = target
+    if not _slide_animating[0]:
+        _slide_animating[0] = True
+        _animate_slide()
+    # Update tab button states
+    if source == "spotify":
+        tab_spotify_btn.configure(fg_color=ACCENT, text_color="#fff")
+        tab_discord_btn.configure(fg_color=BORDER, text_color=TEXT_MUTED)
+    else:
+        tab_discord_btn.configure(fg_color=DISCORD_BLUE, text_color="#fff")
+        tab_spotify_btn.configure(fg_color=BORDER, text_color=TEXT_MUTED)
+
+# ── Tab switcher buttons ──
+tab_row = ctk.CTkFrame(body, fg_color="transparent")
+tab_row.pack(fill="x", pady=(0, 4))
+
+tab_spotify_btn = ctk.CTkButton(
+    tab_row, text="♫  Spotify", font=("Segoe UI", 11, "bold"),
+    fg_color=ACCENT, hover_color="#1d4ed8",
+    text_color="#fff", corner_radius=8, height=28,
+    command=lambda: switch_to_source("spotify")
+)
+tab_spotify_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+tab_discord_btn = ctk.CTkButton(
+    tab_row, text="⬡  Discord", font=("Segoe UI", 11, "bold"),
+    fg_color=BORDER, hover_color="#4b5563",
+    text_color=TEXT_MUTED, corner_radius=8, height=28,
+    command=lambda: switch_to_source("discord")
+)
+tab_discord_btn.pack(side="left", expand=True, fill="x")
+
+# Height holder so container has a size
+slide_container_outer.configure(height=120)
+slide_container_outer.pack_propagate(False)
+
+# ── Spotify panel (left half of slide_inner) ──
+spotify_panel = ctk.CTkFrame(slide_inner, fg_color="#0d1f12", corner_radius=12,
+                              border_width=1, border_color="#1c3828")
+spotify_panel.place(relx=0, rely=0, relwidth=0.5, relheight=1.0)
+
+# ── Discord panel (right half of slide_inner) ──
+discord_panel = ctk.CTkFrame(slide_inner, fg_color=DISCORD_DARK, corner_radius=12,
+                              border_width=1, border_color=DISCORD_BORDER)
+discord_panel.place(relx=0.5, rely=0, relwidth=0.5, relheight=1.0)
+
+# ─────────────────────────────────────────
+# Spotify card contents (inside spotify_panel)
+# ─────────────────────────────────────────
+sp_header = ctk.CTkFrame(spotify_panel, fg_color="transparent")
 sp_header.place(x=14, y=10)
 ctk.CTkLabel(sp_header, text="♫", font=("Segoe UI", 15), text_color=SPOTIFY_GREEN).pack(side="left", padx=(0, 5))
 ctk.CTkLabel(sp_header, text="SPOTIFY", font=("Segoe UI", 9, "bold"), text_color=SPOTIFY_GREEN).pack(side="left")
 
 spotify_login_btn = ctk.CTkButton(
-    spotify_card, text="Login with Spotify", width=152, height=28,
+    spotify_panel, text="Login with Spotify", width=152, height=28,
     font=("Segoe UI", 11, "bold"),
     fg_color=SPOTIFY_GREEN, hover_color="#17a349", text_color="#000000",
     corner_radius=20, command=do_spotify_login
 )
 spotify_login_btn.place(relx=1.0, x=-14, y=10)
 
-# Status + track
-spotify_status_label = ctk.CTkLabel(spotify_card, text="Not connected — click Login to authorize",
-                                     font=("Segoe UI", 9), text_color=TEXT_MUTED)
+spotify_status_label = ctk.CTkLabel(spotify_panel,
+    text="Not connected — click Login to authorize",
+    font=("Segoe UI", 9), text_color=TEXT_MUTED)
 spotify_status_label.place(x=14, y=32)
 
-spotify_track_label = ctk.CTkLabel(spotify_card, text="—",
-                                    font=("Segoe UI", 11, "bold"),
-                                    text_color=TEXT_MUTED, anchor="w", wraplength=310)
-spotify_track_label.place(x=14, y=52)
+spotify_track_label = ctk.CTkLabel(spotify_panel, text="—",
+    font=("Segoe UI", 11, "bold"), text_color=TEXT_MUTED,
+    anchor="w", wraplength=260)
+spotify_track_label.place(x=14, y=50)
 
-# Bottom row: manual artist/song + Add to Banner btn
-sp_bottom = ctk.CTkFrame(spotify_card, fg_color="transparent")
-sp_bottom.place(x=14, y=78, relwidth=0.97)
+sp_bottom = ctk.CTkFrame(spotify_panel, fg_color="transparent")
+sp_bottom.place(x=14, y=88, relwidth=0.97)
 
 manual_artist_entry = ctk.CTkEntry(
     sp_bottom, placeholder_text="Artist",
     font=("Segoe UI", 11), fg_color=SURFACE, border_color=BORDER,
     border_width=1, text_color=TEXT_PRIMARY,
-    placeholder_text_color=TEXT_MUTED, width=110, height=24, corner_radius=6
+    placeholder_text_color=TEXT_MUTED, width=90, height=24, corner_radius=6
 )
 manual_artist_entry.pack(side="left", padx=(0, 4))
 
@@ -892,25 +1562,66 @@ manual_song_entry = ctk.CTkEntry(
     sp_bottom, placeholder_text="Song",
     font=("Segoe UI", 11), fg_color=SURFACE, border_color=BORDER,
     border_width=1, text_color=TEXT_PRIMARY,
-    placeholder_text_color=TEXT_MUTED, width=110, height=24, corner_radius=6
+    placeholder_text_color=TEXT_MUTED, width=90, height=24, corner_radius=6
 )
-manual_song_entry.pack(side="left", padx=(0, 6))
+manual_song_entry.pack(side="left", padx=(0, 4))
 
 ctk.CTkButton(
-    sp_bottom, text="Set Manual", width=84, height=24,
+    sp_bottom, text="Set", width=50, height=24,
     font=("Segoe UI", 10), fg_color=BORDER, hover_color="#4b5563",
     text_color=TEXT_PRIMARY, corner_radius=6,
     command=use_manual_track
-).pack(side="left", padx=(0, 6))
+).pack(side="left", padx=(0, 4))
 
 spotify_banner_btn = ctk.CTkButton(
-    sp_bottom, text="+ Add to Banner", width=116, height=24,
+    sp_bottom, text="+ Banner", width=80, height=24,
     font=("Segoe UI", 10, "bold"),
     fg_color=BORDER, hover_color="#4b5563",
     text_color=TEXT_PRIMARY, corner_radius=6,
     command=toggle_spotify_banner
 )
 spotify_banner_btn.pack(side="left")
+
+# ─────────────────────────────────────────
+# Discord card contents (inside discord_panel)
+# ─────────────────────────────────────────
+dc_header = ctk.CTkFrame(discord_panel, fg_color="transparent")
+dc_header.place(x=14, y=10)
+ctk.CTkLabel(dc_header, text="⬡", font=("Segoe UI", 15), text_color=DISCORD_BLUE).pack(side="left", padx=(0, 5))
+ctk.CTkLabel(dc_header, text="DISCORD", font=("Segoe UI", 9, "bold"), text_color=DISCORD_BLUE).pack(side="left")
+
+discord_login_btn = ctk.CTkButton(
+    discord_panel, text="Login with Discord", width=152, height=28,
+    font=("Segoe UI", 11, "bold"),
+    fg_color=DISCORD_BLUE, hover_color="#4338ca", text_color="#fff",
+    corner_radius=20, command=do_discord_login
+)
+discord_login_btn.place(relx=1.0, x=-14, y=10)
+
+discord_status_label = ctk.CTkLabel(discord_panel,
+    text="Not connected — click Login to authorize",
+    font=("Segoe UI", 9), text_color=TEXT_MUTED)
+discord_status_label.place(x=14, y=32)
+
+discord_info_label = ctk.CTkLabel(discord_panel, text="—",
+    font=("Segoe UI", 11, "bold"), text_color=TEXT_MUTED,
+    anchor="w", wraplength=260)
+discord_info_label.place(x=14, y=50)
+
+dc_bottom = ctk.CTkFrame(discord_panel, fg_color="transparent")
+dc_bottom.place(x=14, y=88, relwidth=0.97)
+
+discord_banner_btn = ctk.CTkButton(
+    dc_bottom, text="+ Add to Banner", width=130, height=24,
+    font=("Segoe UI", 10, "bold"),
+    fg_color=BORDER, hover_color="#4b5563",
+    text_color=TEXT_PRIMARY, corner_radius=6,
+    command=toggle_discord_banner
+)
+discord_banner_btn.pack(side="left")
+
+# Set initial tab position based on saved preference
+app.after(200, lambda: switch_to_source(active_source))
 
 # ── IP Config ──
 ip_card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=60)
@@ -1011,43 +1722,7 @@ delay_val_label.pack(side="right")
 
 
 
-sec_frame = ctk.CTkFrame(body, fg_color="transparent")
-sec_frame.pack(fill="x", pady=(8, 0))
 
-load_btn = ctk.CTkButton(
-    sec_frame, text="Load JSON", font=("Segoe UI", 11),
-    fg_color=BORDER, hover_color="#4b5563", corner_radius=8, height=32,
-    text_color=TEXT_PRIMARY, command=load_file
-)
-load_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
-
-clear_btn = ctk.CTkButton(
-    sec_frame, text="Clear All", font=("Segoe UI", 11),
-    fg_color="transparent", hover_color="#374151", corner_radius=8, height=32,
-    text_color=TEXT_MUTED, border_width=1, border_color=BORDER,
-    command=clear_all
-)
-clear_btn.pack(side="left", expand=True, fill="x", padx=5)
-
-# ── Update Card ──
-update_card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=48,
-                            border_width=1, border_color=BORDER)
-update_card.pack(fill="x", pady=(8, 0))
-update_card.pack_propagate(False)
-
-update_btn = ctk.CTkButton(
-    update_card, text="Check for Updates", width=150, height=28,
-    font=("Segoe UI", 11, "bold"),
-    fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=8,
-    command=on_update_btn
-)
-update_btn.place(relx=1.0, x=-12, rely=0.5, anchor="e")
-
-update_status_label = ctk.CTkLabel(
-    update_card, text=f"v{APP_VERSION}", font=("Consolas", 10),
-    text_color=TEXT_MUTED, anchor="w"
-)
-update_status_label.place(x=14, rely=0.5, anchor="w")
 
 # ── Footer ──
 footer = ctk.CTkFrame(app, fg_color="#0d1117", corner_radius=0, height=30)
@@ -1075,9 +1750,16 @@ except:
 # Restore saved Spotify session if available
 if load_tokens() and spotify_refresh_token:
     spotify_enabled = True
-    spotify_login_btn.configure(text="Connected!", fg_color="#166534")
-    spotify_status_label.configure(text="Session restored — polling every 5s", text_color=SUCCESS)
+    spotify_login_btn.configure(text="Connected!", fg_color="#166634")
+    spotify_status_label.configure(text="Session restored", text_color=SUCCESS)
     start_spotify_poller()
+
+# Restore saved Discord session if available
+if discord_load_tokens() and discord_refresh_token:
+    discord_enabled = True
+    discord_login_btn.configure(text="Connected!", fg_color="#3730a3")
+    discord_status_label.configure(text="Session restored", text_color="#818cf8")
+    start_discord_poller()
 
 # Auto-check for updates on launch
 app.after(2000, auto_check_update)
