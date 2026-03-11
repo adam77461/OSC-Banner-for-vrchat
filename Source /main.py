@@ -33,6 +33,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 from pythonosc.udp_client import SimpleUDPClient
 
+
 # ---------------- CONFIG ----------------
 VRCHAT_IP = "127.0.0.1"
 VRCHAT_PORT = 9000
@@ -57,7 +58,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ---------------- VERSION ----------------
-APP_VERSION = "2.0.0"
+APP_VERSION = "1.0.0"
 VERSION_URL  = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/version.txt"
 UPDATE_URL   = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%20/main.py"
 
@@ -162,23 +163,32 @@ _discord_pkce_verifier = None
 _discord_auth_holder   = [None]
 _discord_auth_cancel   = [False]   # set True to abort a waiting auth thread
 
+
 # Shared source preference — "spotify" or "discord"
 active_source = "last_used"        # overwritten from settings file
 SETTINGS_FILE = "settings.json"
 
 def load_settings():
-    global active_source
+    global active_source, VRCHAT_IP, VRCHAT_PORT
     try:
         with open(SETTINGS_FILE) as f:
             d = json.load(f)
         active_source = d.get("active_source", "spotify")
+        VRCHAT_IP     = d.get("vrchat_ip", "127.0.0.1")
+        VRCHAT_PORT   = int(d.get("vrchat_port", 9000))
     except:
         active_source = "spotify"
+        VRCHAT_IP     = "127.0.0.1"
+        VRCHAT_PORT   = 9000
 
 def save_settings():
     try:
         with open(SETTINGS_FILE, "w") as f:
-            json.dump({"active_source": active_source}, f)
+            json.dump({
+                "active_source": active_source,
+                "vrchat_ip":     VRCHAT_IP,
+                "vrchat_port":   VRCHAT_PORT,
+            }, f, indent=2)
     except:
         pass
 
@@ -188,6 +198,151 @@ load_settings()
 def reconnect_osc(ip, port):
     global osc
     osc = SimpleUDPClient(ip, int(port))
+
+# macaddress.io API key — used to look up vendor from MAC address
+MACADDRESS_IO_KEY = "at_cIcDUDbhpdjE8q99w7D9ajapAS8ig"
+
+# Fallback static OUI list in case API is unavailable
+META_OUIS = {
+    "2c:26:17", "48:05:60", "50:99:03", "78:c4:fa",
+    "80:f3:ef", "84:57:f7", "88:25:08", "94:f9:29",
+    "b4:17:a8", "c0:dd:8a", "cc:a1:74", "d0:b3:c2", "d4:d6:59",
+}
+
+_vendor_cache = {}  # ip -> vendor string, avoid re-querying
+
+def lookup_mac_vendor(mac):
+    """Look up vendor name via macaddress.io API."""
+    if mac in _vendor_cache:
+        return _vendor_cache[mac]
+    try:
+        url = f"https://api.macaddress.io/v1?apiKey={MACADDRESS_IO_KEY}&output=json&search={mac}"
+        req = urllib.request.Request(url, headers={"User-Agent": "VRChatOSCBanner/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        vendor = data.get("vendorDetails", {}).get("companyName", "")
+        _vendor_cache[mac] = vendor
+        print(f"[MAC] {mac} -> {vendor}")
+        return vendor
+    except Exception as e:
+        print(f"[MAC] Lookup failed for {mac}: {e}")
+        return ""
+
+def is_meta_device(mac):
+    """Return True if MAC belongs to Meta/Oculus via API or fallback OUI list."""
+    vendor = lookup_mac_vendor(mac)
+    if vendor:
+        v = vendor.lower()
+        return any(k in v for k in ("meta", "oculus", "facebook"))
+    # Fallback to static list
+    oui = ":".join(mac.split(":")[:3]).lower()
+    return oui in META_OUIS
+
+def _get_arp_table():
+    """Read ARP table to get IP->MAC mappings without root/admin."""
+    import subprocess, re, platform
+    arp_map = {}
+    try:
+        system = platform.system()
+        if system == "Windows":
+            out = subprocess.check_output("arp -a", shell=True).decode(errors="ignore")
+            for line in out.splitlines():
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([\da-fA-F\-]{17})", line)
+                if m:
+                    ip  = m.group(1)
+                    mac = m.group(2).replace("-", ":").lower()
+                    arp_map[ip] = mac
+        else:  # macOS / Linux
+            out = subprocess.check_output(["arp", "-a"], stderr=subprocess.DEVNULL).decode(errors="ignore")
+            for line in out.splitlines():
+                m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([\da-fA-F:]{17})", line)
+                if m:
+                    ip  = m.group(1)
+                    mac = m.group(2).lower()
+                    arp_map[ip] = mac
+    except Exception as e:
+        print(f"[Scan] ARP error: {e}")
+    return arp_map
+
+def _ping_subnet(subnet_base):
+    """Ping sweep to populate ARP table."""
+    import subprocess, platform
+    system = platform.system()
+    pinged = []
+    for i in range(1, 255):
+        ip = f"{subnet_base}.{i}"
+        try:
+            if system == "Windows":
+                subprocess.Popen(
+                    ["ping", "-n", "1", "-w", "100", ip],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(
+                    ["ping", "-c", "1", "-W", "1", ip],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            pinged.append(ip)
+        except: pass
+    return pinged
+
+def scan_for_headset(callback):
+    """Find Meta Quest headset on LAN using ARP + OUI matching."""
+    import socket as _sock
+
+    def _scan():
+        app.after(0, lambda: callback("scanning", None))
+
+        # Get local IP / subnet
+        try:
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except:
+            local_ip = "192.168.1.1"
+
+        subnet_base = local_ip.rsplit(".", 1)[0]
+        print(f"[Scan] Local IP: {local_ip}, subnet: {subnet_base}.0/24")
+
+        # Step 1 — check existing ARP table first (fast)
+        app.after(0, lambda: callback("progress", 10))
+        arp = _get_arp_table()
+        print(f"[Scan] ARP table: {len(arp)} entries")
+
+        found = []
+        app.after(0, lambda: callback("progress", 15))
+        for ip, mac in arp.items():
+            if is_meta_device(mac):
+                print(f"[Scan] Quest found in ARP: {ip} ({mac})")
+                found.append((ip, mac))
+
+        if found:
+            app.after(0, lambda f=found: callback("done", f))
+            return
+
+        # Step 2 — ping sweep to populate ARP, then re-check
+        app.after(0, lambda: callback("progress", 20))
+        print(f"[Scan] No Quest in ARP — pinging {subnet_base}.0/24...")
+        _ping_subnet(subnet_base)
+
+        # Wait for pings to complete and ARP to populate
+        import time as _t
+        for pct in range(25, 90, 5):
+            _t.sleep(0.4)
+            app.after(0, lambda p=pct: callback("progress", p))
+
+        app.after(0, lambda: callback("progress", 90))
+        arp2 = _get_arp_table()
+        print(f"[Scan] ARP after ping: {len(arp2)} entries")
+
+        for ip, mac in arp2.items():
+            if ip not in [f for f, _ in found]:  # skip already found
+                if is_meta_device(mac):
+                    print(f"[Scan] Quest found after ping: {ip} ({mac})")
+                    found.append((ip, mac))
+
+        app.after(0, lambda f=found: callback("done", f))
+
+    threading.Thread(target=_scan, daemon=True).start()
 
 
 # ---------------- OSC ----------------
@@ -749,8 +904,10 @@ def _build_discord_banner_text():
 
 class _DiscordCallbackHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        print(f"[Discord] Callback hit: {self.path}")
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+        print(f"[Discord] Parsed params: {params}")
         if "code" in params:
             _discord_auth_holder[0] = params["code"][0]
             self.send_response(200)
@@ -764,9 +921,12 @@ class _DiscordCallbackHandler(http.server.BaseHTTPRequestHandler):
                 b"</body></html>"
             )
         else:
+            print(f"[Discord] No code in params — sending 400")
             self.send_response(400)
             self.end_headers()
-    def log_message(self, *a): pass
+    def do_GET_favicon(self): pass
+    def log_message(self, fmt, *args):
+        print(f"[Discord HTTP] {fmt % args}")
 
 # Hardcoded fallback URL (no PKCE challenge — use if browser doesn't open)
 DISCORD_FALLBACK_URL = (
@@ -818,18 +978,15 @@ def _show_secret_prompt():
 
 def do_discord_login():
     global _discord_pkce_verifier
-    # Cancel any previous auth attempt still waiting on port 8889
+    # Cancel any previous auth attempt
     _discord_auth_cancel[0] = True
     _discord_auth_holder[0] = None
-    import time as _time; _time.sleep(0.1)   # let old thread notice cancel
+    time.sleep(0.15)  # let old thread notice cancel and exit
     _discord_auth_cancel[0] = False
+
     verifier, challenge = _discord_generate_pkce()
     _discord_pkce_verifier = verifier
 
-    # PKCE flow — no client_secret needed
-    # Requires PUBLIC_OAUTH2_CLIENT flag in Discord Developer Portal
-    # prompt=consent forces Discord to show fresh auth every time (busts browser cache)
-    # state nonce prevents any cached redirect from a previous attempt
     state = base64.urlsafe_b64encode(os.urandom(8)).rstrip(b"=").decode()
     params = urllib.parse.urlencode({
         "client_id":             DISCORD_CLIENT_ID,
@@ -844,28 +1001,68 @@ def do_discord_login():
     auth_url = f"https://discord.com/oauth2/authorize?{params}"
     print(f"[Discord] Auth URL challenge={challenge}")
 
-    opened = False
-    try:
-        webbrowser.open(auth_url)
-        opened = True
-    except:
-        pass
+    discord_login_btn.configure(text="Authorizing...", state="disabled")
+    discord_status_label.configure(
+        text="Starting local server...", text_color=TEXT_MUTED)
 
-    if opened:
-        discord_login_btn.configure(text="Authorizing...", state="disabled")
-        discord_status_label.configure(
-            text="Browser opened — authorize then return here",
-            text_color=TEXT_MUTED)
-    else:
-        # Browser failed — show fallback URL and copy button
-        discord_login_btn.configure(text="Authorizing...", state="disabled")
-        discord_status_label.configure(
-            text="Browser didn't open — click Copy URL below",
-            text_color=ACCENT)
-        app.after(0, _show_fallback_url)
+    # ── Start server FIRST, then open browser ──
+    # Use an event so we know the server is bound before the browser opens
+    server_ready = threading.Event()
 
-    # Pass verifier directly into thread so it can't be stomped by a re-login
-    threading.Thread(target=_discord_auth_server, args=(verifier,), daemon=True).start()
+    def _run_server():
+        # Force-close any lingering socket on 8889
+        try:
+            import socket as _sock
+            killer = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            killer.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+            killer.bind(("127.0.0.1", 8889))
+            killer.close()
+        except: pass
+
+        socketserver.TCPServer.allow_reuse_address = True
+        try:
+            srv = socketserver.TCPServer(("127.0.0.1", 8889), _DiscordCallbackHandler)
+            srv.socket.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+            srv.timeout = 180
+            print(f"[Discord] Callback server listening on 127.0.0.1:8889")
+            server_ready.set()   # signal: server is bound and ready
+            # Keep serving until we get the code (handles favicon pre-requests)
+            for _ in range(5):
+                srv.handle_request()
+                if _discord_auth_holder[0] is not None:
+                    break
+            srv.server_close()
+            print(f"[Discord] Callback server closed, code={_discord_auth_holder[0]}")
+        except Exception as e:
+            print(f"[Discord] Server error: {type(e).__name__}: {e}")
+            server_ready.set()   # unblock even on error
+
+        # After request handled, do the token exchange
+        _discord_exchange(verifier)
+
+    threading.Thread(target=_run_server, daemon=True).start()
+
+    # Wait up to 2s for server to be ready, then open browser
+    def _open_browser():
+        if not server_ready.wait(timeout=2.0):
+            print("[Discord] Server took too long to start")
+        opened = False
+        try:
+            webbrowser.open(auth_url)
+            opened = True
+        except:
+            pass
+        if opened:
+            app.after(0, lambda: discord_status_label.configure(
+                text="Browser opened — authorize then return here",
+                text_color=TEXT_MUTED))
+        else:
+            app.after(0, lambda: discord_status_label.configure(
+                text="Browser didn't open — click Copy URL below",
+                text_color=ACCENT))
+            app.after(0, _show_fallback_url)
+
+    threading.Thread(target=_open_browser, daemon=True).start()
 
 def _show_fallback_url():
     """Show a copyable fallback URL dialog if browser didn't open."""
@@ -901,26 +1098,21 @@ def _show_fallback_url():
     ctk.CTkLabel(win, text="After authorizing in browser, close this window.",
                  font=("Segoe UI", 9), text_color=TEXT_MUTED).pack()
 
-def _discord_auth_server(verifier):
+def _discord_exchange(verifier):
+    """Exchange auth code for token — called after callback server receives the code."""
     global discord_token, discord_refresh_token, discord_token_expiry, discord_enabled
-    print(f"[Discord] Auth server started with verifier={verifier} challenge should be={__import__('base64').urlsafe_b64encode(__import__('hashlib').sha256(verifier.encode('ascii')).digest()).rstrip(b'=').decode()}")
+    code = _discord_auth_holder[0]
+    print(f"[Discord] Code received (full): '{code}' len={len(code) if code else 0}")
+    if _discord_auth_cancel[0]:
+        print("[Discord] Auth cancelled — stale thread exiting")
+        return
+    if not code:
+        app.after(0, lambda: discord_status_label.configure(
+            text="Auth cancelled or timed out", text_color=DANGER))
+        app.after(0, lambda: discord_login_btn.configure(
+            text="Login with Discord", state="normal"))
+        return
     try:
-        socketserver.TCPServer.allow_reuse_address = True
-        with socketserver.TCPServer(("127.0.0.1", 8889), _DiscordCallbackHandler) as srv:
-            srv.socket.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
-            srv.timeout = 120
-            srv.handle_request()
-        code = _discord_auth_holder[0]
-        print(f"[Discord] Code received (full): '{code}' len={len(code) if code else 0}")
-        if _discord_auth_cancel[0]:
-            print("[Discord] Auth cancelled — stale thread exiting")
-            return
-        if not code:
-            app.after(0, lambda: discord_status_label.configure(
-                text="Auth cancelled", text_color=DANGER))
-            app.after(0, lambda: discord_login_btn.configure(
-                text="Login with Discord", state="normal"))
-            return
         # Exchange code using PKCE verifier passed directly from login function
         print(f"[Discord] Exchanging code with verifier={verifier} (len={len(verifier)})")
         print(f"[Discord] Code length: {len(code)}")
@@ -996,7 +1188,7 @@ def _discord_auth_server(verifier):
         start_discord_poller()
     except Exception as e:
         import traceback
-        print(f"[Discord] Outer exception: {type(e).__name__}: {e}")
+        print(f"[Discord] Exchange exception: {type(e).__name__}: {e}")
         traceback.print_exc()
         app.after(0, lambda err=str(e): discord_status_label.configure(
             text=f"Auth error: {err}", text_color=DANGER))
@@ -1205,6 +1397,7 @@ def update_delay_label(val):
     delay_val_label.configure(text=f"{float(val):.1f}s")
 
 def apply_ip():
+    global VRCHAT_IP, VRCHAT_PORT
     ip = ip_entry.get().strip()
     port_str = port_entry.get().strip()
     if not ip:
@@ -1218,12 +1411,20 @@ def apply_ip():
         ip_status.configure(text="Invalid port", text_color=DANGER)
         return
     try:
+        VRCHAT_IP   = ip
+        VRCHAT_PORT = port
         reconnect_osc(ip, port)
+        save_settings()
         footer_target.configure(text=f"->  {ip}:{port}")
-        ip_status.configure(text="Applied!", text_color=SUCCESS)
+        ip_status.configure(text="Saved!", text_color=SUCCESS)
         app.after(2000, lambda: ip_status.configure(text=""))
     except Exception:
         ip_status.configure(text="Failed", text_color=DANGER)
+
+
+def apply_target():
+    """Called from settings popup — same as apply_ip."""
+    apply_ip()
 
 
 # ================================================================
@@ -1317,12 +1518,96 @@ def open_settings():
         ip_entry.delete(0, "end"); ip_entry.insert(0, _ip.get())
         port_entry.delete(0, "end"); port_entry.insert(0, _port.get())
         apply_target()
-        ctk.CTkLabel(tgt_row, text="✓", text_color=SUCCESS,
-                     font=("Segoe UI", 14, "bold")).pack(side="left")
+        _apply_lbl.configure(text="✓ Saved", text_color=SUCCESS)
+        tgt.after(2000, lambda: _apply_lbl.configure(text=""))
     ctk.CTkButton(tgt_row, text="Apply", width=64, height=30,
                   font=("Segoe UI", 11), fg_color=ACCENT, hover_color="#1d4ed8",
                   text_color="#fff", corner_radius=6,
-                  command=_apply_target).pack(side="left")
+                  command=_apply_target).pack(side="left", padx=(0,6))
+    _apply_lbl = ctk.CTkLabel(tgt_row, text="", font=("Segoe UI", 10),
+                               text_color=SUCCESS)
+    _apply_lbl.pack(side="left")
+
+    # ── Auto-find headset ──
+    scan_row = ctk.CTkFrame(tgt, fg_color="transparent")
+    scan_row.pack(fill="x", padx=14, pady=(0, 12))
+
+    scan_status = ctk.CTkLabel(scan_row, text="Click to scan for VRChat headset on your network",
+                                font=("Segoe UI", 9), text_color=TEXT_MUTED, anchor="w")
+    scan_status.pack(side="left", expand=True, fill="x")
+
+    found_hosts = []
+
+    def _on_scan(state, data):
+        if state == "scanning":
+            scan_btn.configure(text="Scanning...", state="disabled")
+            scan_status.configure(text="Scanning subnet for port 9000...", text_color=TEXT_MUTED)
+        elif state == "progress":
+            scan_status.configure(text=f"Scanning... {data}%", text_color=TEXT_MUTED)
+        elif state == "done":
+            scan_btn.configure(text="🔍 Auto Find", state="normal")
+            if not data:
+                scan_status.configure(text="No Quest found — see below", text_color=DANGER)
+                tip_win = ctk.CTkToplevel(win)
+                tip_win.title("Headset Not Found")
+                tip_win.geometry("420x270")
+                tip_win.configure(fg_color=SURFACE)
+                tip_win.grab_set()
+                ctk.CTkLabel(tip_win, text="Quest Not Found",
+                             font=("Segoe UI", 14, "bold"),
+                             text_color=TEXT_PRIMARY).pack(pady=(18, 4))
+                ctk.CTkLabel(tip_win,
+                             text="Is MAC Address Randomization turned ON on your Quest?",
+                             font=("Segoe UI", 11), text_color=TEXT_MUTED,
+                             justify="center").pack(pady=(0, 10))
+                hint = ctk.CTkFrame(tip_win, fg_color=CARD, corner_radius=10)
+                hint.pack(fill="x", padx=20, pady=(0, 10))
+                ctk.CTkLabel(hint,
+                    text="If YES - turn it OFF: Settings > Wi-Fi > tap your network > Advanced > MAC Address > Use Device MAC",
+                    font=("Segoe UI", 11), text_color="#f59e0b",
+                    justify="left").pack(padx=16, pady=10)
+                ctk.CTkLabel(tip_win,
+                             text="With randomization ON the MAC won't match Meta's vendor prefix so auto-detection fails.",
+                             font=("Segoe UI", 10), text_color=TEXT_MUTED,
+                             justify="center").pack(pady=(0, 10))
+                ctk.CTkButton(tip_win, text="Got it", height=34,
+                              font=("Segoe UI", 12, "bold"),
+                              fg_color=ACCENT, hover_color="#1d4ed8",
+                              text_color="#fff", corner_radius=8,
+                              command=tip_win.destroy).pack(padx=20, fill="x", pady=(0, 16))
+            elif len(data) == 1:
+                ip, mac = data[0]
+                _ip.delete(0, "end"); _ip.insert(0, ip)
+                scan_status.configure(
+                    text=f"✓ Quest found: {ip}  ({mac}) — click Apply",
+                    text_color=SUCCESS)
+            else:
+                found_hosts.clear(); found_hosts.extend(data)
+                pick_win = ctk.CTkToplevel(win)
+                pick_win.title("Multiple Quest headsets found")
+                pick_win.geometry("340x220")
+                pick_win.configure(fg_color=SURFACE)
+                pick_win.grab_set()
+                ctk.CTkLabel(pick_win, text="Select your headset:",
+                             font=("Segoe UI", 12, "bold"), text_color=TEXT_PRIMARY).pack(pady=(14,8))
+                for ip, mac in data:
+                    def _pick(i=ip, m=mac):
+                        _ip.delete(0, "end"); _ip.insert(0, i)
+                        scan_status.configure(
+                            text=f"✓ Selected: {i} ({m}) — click Apply",
+                            text_color=SUCCESS)
+                        pick_win.destroy()
+                    ctk.CTkButton(pick_win, text=f"{ip}  •  {mac}", height=32,
+                                  font=("Segoe UI", 11), fg_color=BORDER,
+                                  hover_color="#4b5563", text_color=TEXT_PRIMARY,
+                                  command=_pick).pack(fill="x", padx=20, pady=3)
+
+    scan_btn = ctk.CTkButton(scan_row, text="🔍 Auto Find", width=100, height=26,
+                              font=("Segoe UI", 10, "bold"),
+                              fg_color=BORDER, hover_color="#4b5563",
+                              text_color=TEXT_PRIMARY, corner_radius=6,
+                              command=lambda: scan_for_headset(_on_scan))
+    scan_btn.pack(side="right")
 
     # ── Update ──
     upd = ctk.CTkFrame(win, fg_color=CARD, corner_radius=10)
@@ -1415,14 +1700,15 @@ ctk.CTkLabel(now_card, text="NOW SENDING", font=("Segoe UI", 9, "bold"), text_co
 now_label = ctk.CTkLabel(now_card, text="—", font=("Segoe UI", 13, "bold"), text_color=ACCENT, anchor="w")
 now_label.place(x=14, y=29)
 
-# ── Live / Stopped status bar (below Now Sending) ──
+# ── Status bar ──
 status_frame = ctk.CTkFrame(body, fg_color="#1f2937", corner_radius=8, height=28)
 status_frame.pack(fill="x", pady=(0, 8))
 status_frame.pack_propagate(False)
+
 status_dot = ctk.CTkLabel(status_frame, text="●", font=("Segoe UI", 11), text_color=DANGER)
 status_dot.place(x=14, rely=0.5, anchor="w")
 status_text = ctk.CTkLabel(status_frame, text="Stopped", font=("Segoe UI", 11, "bold"), text_color=DANGER)
-status_text.place(x=32, rely=0.5, anchor="w")
+status_text.place(x=30, rely=0.5, anchor="w")
 
 # ══════════════════════════════════════════════════════
 # SOURCE SELECTOR — slide animation between Spotify/Discord
