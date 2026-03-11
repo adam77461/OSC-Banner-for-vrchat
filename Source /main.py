@@ -58,7 +58,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ---------------- VERSION ----------------
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.5"
 VERSION_URL  = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/version.txt"
 UPDATE_URL   = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%20/main.py"
 
