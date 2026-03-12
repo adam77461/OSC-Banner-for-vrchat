@@ -58,7 +58,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ---------------- VERSION ----------------
-APP_VERSION = "2.5.0"
+APP_VERSION = "1.0.0"
 VERSION_URL  = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/version.txt"
 UPDATE_URL   = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%20/main.py"
 
@@ -167,33 +167,17 @@ _discord_auth_cancel   = [False]   # set True to abort a waiting auth thread
 # Shared source preference — "spotify" or "discord"
 active_source = "last_used"        # overwritten from settings file
 
-# ── Style settings (saved to settings.json) ──
-style_border_char  = "~"        # border character
-style_border_on    = True       # show border
-style_padding      = 3          # spaces around text
-style_time_format  = "none"     # none / 12hr / 24hr / datetime
-style_prefix       = ""         # prefix before text
-style_suffix       = ""         # suffix after text
-style_template     = "{text}"   # message template
+# Style state lives in the Style tab composer (local to UI)
 SETTINGS_FILE = "settings.json"
 
 def load_settings():
     global active_source, VRCHAT_IP, VRCHAT_PORT
-    global style_border_char, style_border_on, style_padding
-    global style_time_format, style_prefix, style_suffix, style_template
     try:
         with open(SETTINGS_FILE) as f:
             d = json.load(f)
-        active_source     = d.get("active_source", "spotify")
-        VRCHAT_IP         = d.get("vrchat_ip", "127.0.0.1")
-        VRCHAT_PORT       = int(d.get("vrchat_port", 9000))
-        style_border_char = d.get("style_border_char", "~")
-        style_border_on   = d.get("style_border_on", True)
-        style_padding     = int(d.get("style_padding", 3))
-        style_time_format = d.get("style_time_format", "none")
-        style_prefix      = d.get("style_prefix", "")
-        style_suffix      = d.get("style_suffix", "")
-        style_template    = d.get("style_template", "{text}")
+        active_source = d.get("active_source", "spotify")
+        VRCHAT_IP     = d.get("vrchat_ip", "127.0.0.1")
+        VRCHAT_PORT   = int(d.get("vrchat_port", 9000))
     except:
         active_source = "spotify"
         VRCHAT_IP     = "127.0.0.1"
@@ -203,16 +187,9 @@ def save_settings():
     try:
         with open(SETTINGS_FILE, "w") as f:
             json.dump({
-                "active_source":    active_source,
-                "vrchat_ip":        VRCHAT_IP,
-                "vrchat_port":      VRCHAT_PORT,
-                "style_border_char":style_border_char,
-                "style_border_on":  style_border_on,
-                "style_padding":    style_padding,
-                "style_time_format":style_time_format,
-                "style_prefix":     style_prefix,
-                "style_suffix":     style_suffix,
-                "style_template":   style_template,
+                "active_source": active_source,
+                "vrchat_ip":     VRCHAT_IP,
+                "vrchat_port":   VRCHAT_PORT,
             }, f, indent=2)
     except:
         pass
@@ -371,47 +348,50 @@ def scan_for_headset(callback):
 
 
 # ---------------- OSC ----------------
-def get_time_str():
-    """Return time string based on style_time_format."""
-    if style_time_format == "12hr":
-        return datetime.now().strftime("%I:%M %p").lstrip("0")
-    elif style_time_format == "24hr":
-        return datetime.now().strftime("%H:%M")
-    elif style_time_format == "datetime":
-        return datetime.now().strftime("%b %d %H:%M")
-    return ""
+def caption_text(c):
+    """Get raw text from a caption (str or dict)."""
+    return c["text"] if isinstance(c, dict) else c
 
-def apply_template(text):
-    """Apply prefix, suffix, time and template to raw text."""
-    t = get_time_str()
-    # Replace {time} in text itself too
-    text = text.replace("{time}", t)
-    # Build from template
-    result = style_template
-    result = result.replace("{text}", text)
-    result = result.replace("{time}", t)
-    result = result.replace("{prefix}", style_prefix)
-    result = result.replace("{suffix}", style_suffix)
-    # Apply prefix/suffix if not already in template
-    if style_prefix and not style_prefix in result:
-        result = style_prefix + result
-    if style_suffix and not style_suffix in result:
-        result = result + style_suffix
-    return result.strip()
+def caption_style(c):
+    """Get style snapshot from caption, or None for global."""
+    if isinstance(c, dict):
+        return c.get("style", None)
+    return None
 
-def format_caption(text):
-    """Format text with current style settings."""
-    body = apply_template(text)
-    if not style_border_on or not style_border_char:
-        return body
-    pad    = " " * style_padding
-    middle = pad + body + pad
-    width  = len(middle)
-    border = style_border_char * width
+def format_caption(text, style=None):
+    """Format text using a style snapshot dict, or plain if None."""
+    if style is None:
+        return text  # no style — send raw
+
+    bc  = style.get("border_char", "~")
+    bon = style.get("border_on", False)
+    pad = style.get("padding", 2)
+    tf  = style.get("time_format", "none")
+    pre = style.get("prefix", "")
+    suf = style.get("suffix", "")
+    tpl = style.get("template", "{text}")
+
+    t = ""
+    if tf == "12hr":       t = datetime.now().strftime("%I:%M %p").lstrip("0")
+    elif tf == "24hr":     t = datetime.now().strftime("%H:%M")
+    elif tf == "datetime": t = datetime.now().strftime("%b %d %H:%M")
+
+    body = text.replace("{time}", t)
+    result = tpl.replace("{text}", body).replace("{time}", t)
+    result = result.replace("{prefix}", pre).replace("{suffix}", suf)
+    if pre and pre not in result: result = pre + result
+    if suf and suf not in result: result = result + suf
+    result = result.strip()
+
+    if not bon or not bc:
+        return result
+    padding = " " * pad
+    middle  = padding + result + padding
+    border  = bc * len(middle)
     return f"{border}\n{middle}\n{border}"
 
-def send_caption(text):
-    formatted = format_caption(text)
+def send_caption(text, style=None):
+    formatted = format_caption(text, style)
     osc.send_message("/chatbox/input", [formatted, True, False])
 
 
@@ -421,7 +401,9 @@ def load_json(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            captions = data.get("captions", [])
+            raw_caps = data.get("captions", [])
+            # Support both old plain-string and new dict format
+            captions = [c if isinstance(c, dict) else {"text": c, "style": None} for c in raw_caps]
         current_file = file_path
         refresh_list()
         update_counter()
@@ -1316,13 +1298,15 @@ def loop():
         caption = base[idx]
         current_caption_index[0] = idx + 1
 
-        if caption == "{time}":
+        raw   = caption_text(caption)
+        style = caption_style(caption)
+        if raw == "{time}":
             text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         else:
-            text = caption
+            text = raw
 
         app.after(0, lambda t=text, i=idx: update_now_sending(t, i))
-        send_caption(text)
+        send_caption(text, style)
         time.sleep(delay_slider.get())
 
     app.after(0, lambda: now_label.configure(text="—"))
@@ -1377,34 +1361,39 @@ def refresh_list():
     row_frames.clear()
 
     for i, c in enumerate(captions):
-        is_time   = "{time}" in c
-        is_styled = (style_border_on or style_prefix or style_suffix
-                     or style_time_format != "none" or style_template != "{text}")
+        raw   = caption_text(c)
+        style = caption_style(c)
+        is_time   = "{time}" in raw
+        is_styled = style is not None
+        # show styled row if caption has own style OR global style is active
+        show_preview = is_styled  # only show preview if caption has its own style
 
         row = ctk.CTkFrame(list_inner, fg_color=CARD, corner_radius=8,
-                           height=54 if is_styled else 38)
+                           height=54 if show_preview else 38)
         row.pack(fill="x", pady=2, padx=0)
         row.pack_propagate(False)
         row_frames.append(row)
 
-        icon = "⏰" if is_time else "💬"
+        # Badge: 🎨 for own style, ⏰ for time, 💬 default
+        icon = "🎨" if is_styled else ("⏰" if is_time else "💬")
+        icon_color = "#a78bfa" if is_styled else TEXT_MUTED
         icon_lbl = ctk.CTkLabel(row, text=icon, font=("Segoe UI Emoji", 13),
-                                 width=28, text_color=TEXT_MUTED)
+                                 width=28, text_color=icon_color)
         icon_lbl.place(x=8, y=9, anchor="nw")
 
-        display_text = c if len(c) <= 48 else c[:45] + "..."
+        display_text = raw if len(raw) <= 48 else raw[:45] + "..."
         text_lbl = ctk.CTkLabel(row, text=display_text, font=("Segoe UI", 12),
                                  text_color=TEXT_PRIMARY, anchor="w")
         text_lbl.place(x=36, y=7, anchor="nw")
 
-        if is_styled:
-            preview_str = format_caption(c)
-            # Compact single-line preview
+        if show_preview:
+            preview_str = format_caption(raw, style)
             preview_compact = preview_str.replace("\n", "  ").strip()
             if len(preview_compact) > 60:
                 preview_compact = preview_compact[:57] + "..."
+            preview_color = "#a78bfa" if is_styled else "#6b7280"
             preview_lbl = ctk.CTkLabel(row, text=preview_compact,
-                font=("Consolas", 8), text_color="#a78bfa", anchor="w")
+                font=("Consolas", 8), text_color=preview_color, anchor="w")
             preview_lbl.place(x=36, y=28, anchor="nw")
 
         del_btn = ctk.CTkButton(
@@ -1444,7 +1433,7 @@ def pulse_status(active):
 def add_caption():
     text = entry.get().strip()
     if text:
-        captions.append(text)
+        captions.append({"text": text, "style": None})
         entry.delete(0, "end")
         refresh_list()
         save_json()
@@ -2000,22 +1989,48 @@ discord_banner_btn = ctk.CTkButton(
 discord_banner_btn.pack(side="left")
 
 # ─────────────────────────────────────────
-# Style panel contents
+# Style panel — self-contained caption composer
+# All state is LOCAL to this composer, not global
 # ─────────────────────────────────────────
 sty_header = ctk.CTkFrame(style_panel, fg_color="transparent")
-sty_header.place(x=14, y=10)
+sty_header.place(x=14, y=6)
 ctk.CTkLabel(sty_header, text="✦", font=("Segoe UI", 13), text_color="#a78bfa").pack(side="left", padx=(0,5))
-ctk.CTkLabel(sty_header, text="STYLE", font=("Segoe UI", 9, "bold"), text_color="#a78bfa").pack(side="left")
+ctk.CTkLabel(sty_header, text="STYLE  COMPOSER", font=("Segoe UI", 9, "bold"), text_color="#a78bfa").pack(side="left")
+
+# Local composer state
+_c_border_char  = ["~"]
+_c_border_on    = [True]
+_c_padding      = [2]
+_c_time_format  = ["none"]
+_c_prefix       = [""]
+_c_suffix       = [""]
+_c_template     = ["{text}"]
+
+def _c_snapshot():
+    return {
+        "border_char":  _c_border_char[0],
+        "border_on":    _c_border_on[0],
+        "padding":      _c_padding[0],
+        "time_format":  _c_time_format[0],
+        "prefix":       _c_prefix[0],
+        "suffix":       _c_suffix[0],
+        "template":     _c_template[0],
+    }
 
 # Preview label
 style_preview = ctk.CTkLabel(style_panel, text="",
-    font=("Consolas", 9), text_color="#c4b5fd", anchor="w",
-    wraplength=240, justify="left")
-style_preview.place(x=14, y=30)
+    font=("Consolas", 8), text_color="#c4b5fd", anchor="w",
+    wraplength=260, justify="left")
+style_preview.place(x=14, y=26)
 
 def refresh_style_preview(*_):
-    sample = format_caption("Hello VRChat")
-    style_preview.configure(text=sample[:120])
+    try:
+        raw = style_caption_entry.get().strip()
+    except:
+        raw = ""
+    sample = raw or "Hello VRChat"
+    result = format_caption(sample, _c_snapshot())
+    style_preview.configure(text=result.replace("\n", "  ")[:100])
 
 # ── Row 1: Border char buttons ──
 border_row = ctk.CTkFrame(style_panel, fg_color="transparent")
@@ -2024,17 +2039,14 @@ border_row.place(x=14, y=88, relwidth=0.93)
 BORDER_OPTIONS = ["~", "#", "*", "=", "-", "none"]
 
 def _set_border(ch):
-    global style_border_char, style_border_on
     if ch == "none":
-        style_border_on = False
+        _c_border_on[0] = False
     else:
-        style_border_on  = True
-        style_border_char = ch
-    save_settings()
+        _c_border_on[0]   = True
+        _c_border_char[0] = ch
     refresh_style_preview()
-    _safe_refresh()
     for b, opt in _border_btns:
-        active = (opt == ch and ch != "none") or (opt == "none" and not style_border_on)
+        active = (opt == ch and ch != "none") or (opt == "none" and not _c_border_on[0])
         b.configure(fg_color="#7c3aed" if active else BORDER,
                     text_color="#fff"  if active else TEXT_MUTED)
 
@@ -2068,17 +2080,16 @@ mid_row = ctk.CTkFrame(style_panel, fg_color="transparent")
 mid_row.place(x=14, y=118, relwidth=0.93)
 
 ctk.CTkLabel(mid_row, text="pad", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
-pad_var = ctk.StringVar(value=str(style_padding))
+pad_var = ctk.StringVar(value=str(_c_padding[0]))
 pad_spin = ctk.CTkEntry(mid_row, width=36, height=22, textvariable=pad_var,
     font=("Consolas", 11), fg_color=SURFACE, border_color=BORDER,
     border_width=1, text_color=TEXT_PRIMARY, corner_radius=5)
 pad_spin.pack(side="left", padx=(4, 12))
 
 def _pad_changed(e=None):
-    global style_padding
     try:
-        style_padding = max(0, min(10, int(pad_var.get())))
-        save_settings(); refresh_style_preview()
+        _c_padding[0] = max(0, min(10, int(pad_var.get())))
+        refresh_style_preview()
     except: pass
 pad_spin.bind("<Return>", _pad_changed)
 pad_spin.bind("<FocusOut>", _pad_changed)
@@ -2089,18 +2100,17 @@ _time_btns = []
 for label, val in TIME_OPTS:
     tb = ctk.CTkButton(mid_row, text=label, width=36, height=22,
                        font=("Segoe UI", 9, "bold"),
-                       fg_color="#7c3aed" if style_time_format==val else BORDER,
+                       fg_color="#7c3aed" if _c_time_format[0]==val else BORDER,
                        hover_color="#5b21b6",
-                       text_color="#fff" if style_time_format==val else TEXT_MUTED,
+                       text_color="#fff" if _c_time_format[0]==val else TEXT_MUTED,
                        corner_radius=5,
                        command=lambda v=val: _set_time(v))
     tb.pack(side="left", padx=2)
     _time_btns.append((tb, val))
 
 def _set_time(val):
-    global style_time_format
-    style_time_format = val
-    save_settings(); refresh_style_preview(); _safe_refresh()
+    _c_time_format[0] = val
+    refresh_style_preview()
     for b, v in _time_btns:
         b.configure(fg_color="#7c3aed" if v==val else BORDER,
                     text_color="#fff"  if v==val else TEXT_MUTED)
@@ -2114,7 +2124,7 @@ prefix_entry = ctk.CTkEntry(fix_row, width=62, height=22,
     font=("Segoe UI", 11), fg_color=SURFACE, border_color=BORDER,
     border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
     placeholder_text="🎵", placeholder_text_color=TEXT_MUTED)
-prefix_entry.insert(0, style_prefix)
+
 prefix_entry.pack(side="left", padx=(4,10))
 
 ctk.CTkLabel(fix_row, text="suf", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
@@ -2122,14 +2132,13 @@ suffix_entry = ctk.CTkEntry(fix_row, width=62, height=22,
     font=("Segoe UI", 11), fg_color=SURFACE, border_color=BORDER,
     border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
     placeholder_text="✨", placeholder_text_color=TEXT_MUTED)
-suffix_entry.insert(0, style_suffix)
+
 suffix_entry.pack(side="left", padx=(4,0))
 
 def _fix_changed(e=None):
-    global style_prefix, style_suffix
-    style_prefix = prefix_entry.get()
-    style_suffix = suffix_entry.get()
-    save_settings(); refresh_style_preview(); _safe_refresh()
+    _c_prefix[0] = prefix_entry.get()
+    _c_suffix[0] = suffix_entry.get()
+    refresh_style_preview()
 prefix_entry.bind("<KeyRelease>", _fix_changed)
 suffix_entry.bind("<KeyRelease>", _fix_changed)
 
@@ -2142,19 +2151,18 @@ tpl_entry = ctk.CTkEntry(tpl_row, height=22,
     font=("Consolas", 9), fg_color=SURFACE, border_color=BORDER,
     border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
     placeholder_text="{text} | {time}", placeholder_text_color=TEXT_MUTED)
-tpl_entry.insert(0, style_template)
+tpl_entry.insert(0, _c_template[0])
 tpl_entry.pack(side="left", expand=True, fill="x", padx=(4,0))
 
 def _tpl_changed(e=None):
-    global style_template
     t = tpl_entry.get().strip()
-    style_template = t if t else "{text}"
-    save_settings(); refresh_style_preview(); _safe_refresh()
+    _c_template[0] = t if t else "{text}"
+    refresh_style_preview()
 tpl_entry.bind("<KeyRelease>", _tpl_changed)
 
 # ── Row 5: Add to Captions ──
 add_row = ctk.CTkFrame(style_panel, fg_color="transparent")
-add_row.place(x=14, y=198, relwidth=0.93)
+add_row.place(x=14, y=192, relwidth=0.93)
 
 style_caption_entry = ctk.CTkEntry(add_row, height=26,
     font=("Segoe UI", 11), fg_color=SURFACE, border_color="#3b1f6e",
@@ -2166,7 +2174,7 @@ def _style_add_caption(e=None):
     raw = style_caption_entry.get().strip()
     if not raw:
         return
-    captions.append(raw)
+    captions.append({"text": raw, "style": _c_snapshot()})
     style_caption_entry.delete(0, "end")
     try:
         refresh_list()
@@ -2182,19 +2190,10 @@ ctk.CTkButton(add_row, text="+ Add", width=60, height=26,
     text_color="#fff", corner_radius=6,
     command=_style_add_caption).pack(side="left")
 
-def _safe_refresh():
-    """Call after full UI is built — refreshes list and entry preview."""
-    try:
-        refresh_list()
-    except: pass
-    try:
-        _update_entry_preview()
-    except: pass
-
-# Init preview and button states
+# Init style composer button states
+_set_border(_c_border_char[0] if _c_border_on[0] else "none")
+_set_time(_c_time_format[0])
 refresh_style_preview()
-_set_border(style_border_char if style_border_on else "none")
-_set_time(style_time_format)
 
 # Set initial tab position based on saved preference
 app.after(200, lambda: switch_to_source(active_source))
@@ -2263,8 +2262,8 @@ add_btn.place(relx=1.0, x=-10, y=10, anchor="ne")
 
 # Styled preview under the entry
 entry_preview_lbl = ctk.CTkLabel(
-    input_frame, text="", font=("Consolas", 8),
-    text_color="#a78bfa", anchor="w"
+    input_frame, text="", font=("Segoe UI", 9),
+    text_color=TEXT_MUTED, anchor="w"
 )
 entry_preview_lbl.place(x=12, y=44, relwidth=0.95)
 
@@ -2274,13 +2273,7 @@ def _update_entry_preview(*_):
     except NameError:
         return
     raw = entry.get().strip()
-    if not raw:
-        entry_preview_lbl.configure(text="")
-        return
-    preview = format_caption(raw).replace("\n", "  ").strip()
-    if len(preview) > 72:
-        preview = preview[:69] + "..."
-    entry_preview_lbl.configure(text=preview)
+    entry_preview_lbl.configure(text=raw)  # plain — no global style
 
 entry.bind("<KeyRelease>", _update_entry_preview)
 
@@ -2342,7 +2335,7 @@ ctk.CTkLabel(footer, text="OSC /chatbox/input",
 try:
     load_json(DEFAULT_FILE)
 except:
-    captions = ["sleeping zzz", "{time}", "miku miku beam"]
+    captions = [{"text": "sleeping zzz", "style": None}, {"text": "{time}", "style": None}, {"text": "miku miku beam", "style": None}]
     save_json()
     refresh_list()
 
