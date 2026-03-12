@@ -58,7 +58,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ---------------- VERSION ----------------
-APP_VERSION = "2.0.5"
+APP_VERSION = "2.5.0"
 VERSION_URL  = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/version.txt"
 UPDATE_URL   = "https://raw.githubusercontent.com/adam77461/OSC-Banner-for-vrchat/main/Source%20/main.py"
 
@@ -166,16 +166,34 @@ _discord_auth_cancel   = [False]   # set True to abort a waiting auth thread
 
 # Shared source preference — "spotify" or "discord"
 active_source = "last_used"        # overwritten from settings file
+
+# ── Style settings (saved to settings.json) ──
+style_border_char  = "~"        # border character
+style_border_on    = True       # show border
+style_padding      = 3          # spaces around text
+style_time_format  = "none"     # none / 12hr / 24hr / datetime
+style_prefix       = ""         # prefix before text
+style_suffix       = ""         # suffix after text
+style_template     = "{text}"   # message template
 SETTINGS_FILE = "settings.json"
 
 def load_settings():
     global active_source, VRCHAT_IP, VRCHAT_PORT
+    global style_border_char, style_border_on, style_padding
+    global style_time_format, style_prefix, style_suffix, style_template
     try:
         with open(SETTINGS_FILE) as f:
             d = json.load(f)
-        active_source = d.get("active_source", "spotify")
-        VRCHAT_IP     = d.get("vrchat_ip", "127.0.0.1")
-        VRCHAT_PORT   = int(d.get("vrchat_port", 9000))
+        active_source     = d.get("active_source", "spotify")
+        VRCHAT_IP         = d.get("vrchat_ip", "127.0.0.1")
+        VRCHAT_PORT       = int(d.get("vrchat_port", 9000))
+        style_border_char = d.get("style_border_char", "~")
+        style_border_on   = d.get("style_border_on", True)
+        style_padding     = int(d.get("style_padding", 3))
+        style_time_format = d.get("style_time_format", "none")
+        style_prefix      = d.get("style_prefix", "")
+        style_suffix      = d.get("style_suffix", "")
+        style_template    = d.get("style_template", "{text}")
     except:
         active_source = "spotify"
         VRCHAT_IP     = "127.0.0.1"
@@ -185,9 +203,16 @@ def save_settings():
     try:
         with open(SETTINGS_FILE, "w") as f:
             json.dump({
-                "active_source": active_source,
-                "vrchat_ip":     VRCHAT_IP,
-                "vrchat_port":   VRCHAT_PORT,
+                "active_source":    active_source,
+                "vrchat_ip":        VRCHAT_IP,
+                "vrchat_port":      VRCHAT_PORT,
+                "style_border_char":style_border_char,
+                "style_border_on":  style_border_on,
+                "style_padding":    style_padding,
+                "style_time_format":style_time_format,
+                "style_prefix":     style_prefix,
+                "style_suffix":     style_suffix,
+                "style_template":   style_template,
             }, f, indent=2)
     except:
         pass
@@ -346,10 +371,43 @@ def scan_for_headset(callback):
 
 
 # ---------------- OSC ----------------
-def format_caption(text, padding=3):
-    width = len(text) + padding * 2
-    border = "~" * width
-    middle = " " * padding + text + " " * padding
+def get_time_str():
+    """Return time string based on style_time_format."""
+    if style_time_format == "12hr":
+        return datetime.now().strftime("%I:%M %p").lstrip("0")
+    elif style_time_format == "24hr":
+        return datetime.now().strftime("%H:%M")
+    elif style_time_format == "datetime":
+        return datetime.now().strftime("%b %d %H:%M")
+    return ""
+
+def apply_template(text):
+    """Apply prefix, suffix, time and template to raw text."""
+    t = get_time_str()
+    # Replace {time} in text itself too
+    text = text.replace("{time}", t)
+    # Build from template
+    result = style_template
+    result = result.replace("{text}", text)
+    result = result.replace("{time}", t)
+    result = result.replace("{prefix}", style_prefix)
+    result = result.replace("{suffix}", style_suffix)
+    # Apply prefix/suffix if not already in template
+    if style_prefix and not style_prefix in result:
+        result = style_prefix + result
+    if style_suffix and not style_suffix in result:
+        result = result + style_suffix
+    return result.strip()
+
+def format_caption(text):
+    """Format text with current style settings."""
+    body = apply_template(text)
+    if not style_border_on or not style_border_char:
+        return body
+    pad    = " " * style_padding
+    middle = pad + body + pad
+    width  = len(middle)
+    border = style_border_char * width
     return f"{border}\n{middle}\n{border}"
 
 def send_caption(text):
@@ -1310,13 +1368,21 @@ row_frames = []
 
 def refresh_list():
     global row_frames
+    try:
+        list_inner.winfo_children()
+    except NameError:
+        return  # UI not built yet
     for w in list_inner.winfo_children():
         w.destroy()
     row_frames.clear()
 
     for i, c in enumerate(captions):
-        is_time = c == "{time}"
-        row = ctk.CTkFrame(list_inner, fg_color=CARD, corner_radius=8, height=38)
+        is_time   = "{time}" in c
+        is_styled = (style_border_on or style_prefix or style_suffix
+                     or style_time_format != "none" or style_template != "{text}")
+
+        row = ctk.CTkFrame(list_inner, fg_color=CARD, corner_radius=8,
+                           height=54 if is_styled else 38)
         row.pack(fill="x", pady=2, padx=0)
         row.pack_propagate(False)
         row_frames.append(row)
@@ -1324,12 +1390,22 @@ def refresh_list():
         icon = "⏰" if is_time else "💬"
         icon_lbl = ctk.CTkLabel(row, text=icon, font=("Segoe UI Emoji", 13),
                                  width=28, text_color=TEXT_MUTED)
-        icon_lbl.place(x=8, rely=0.5, anchor="w")
+        icon_lbl.place(x=8, y=9, anchor="nw")
 
-        display_text = c if len(c) <= 50 else c[:47] + "..."
+        display_text = c if len(c) <= 48 else c[:45] + "..."
         text_lbl = ctk.CTkLabel(row, text=display_text, font=("Segoe UI", 12),
                                  text_color=TEXT_PRIMARY, anchor="w")
-        text_lbl.place(x=36, rely=0.5, anchor="w")
+        text_lbl.place(x=36, y=7, anchor="nw")
+
+        if is_styled:
+            preview_str = format_caption(c)
+            # Compact single-line preview
+            preview_compact = preview_str.replace("\n", "  ").strip()
+            if len(preview_compact) > 60:
+                preview_compact = preview_compact[:57] + "..."
+            preview_lbl = ctk.CTkLabel(row, text=preview_compact,
+                font=("Consolas", 8), text_color="#a78bfa", anchor="w")
+            preview_lbl.place(x=36, y=28, anchor="nw")
 
         del_btn = ctk.CTkButton(
             row, text="✕", width=24, height=24,
@@ -1338,7 +1414,7 @@ def refresh_list():
             text_color=TEXT_MUTED, corner_radius=6,
             command=lambda idx=i: delete_caption(idx)
         )
-        del_btn.place(relx=1.0, x=-6, rely=0.5, anchor="e")
+        del_btn.place(relx=1.0, x=-6, y=6, anchor="ne")
 
         for widget in [row, text_lbl, icon_lbl]:
             widget.bind("<Button-1>", lambda e, idx=i: select_row(idx))
@@ -1729,15 +1805,15 @@ source_arrow_label.pack(pady=(0, 4))
 slide_container_outer = ctk.CTkFrame(body, fg_color="transparent")
 slide_container_outer.pack(fill="x", pady=(0, 8))
 
-# Inner frame that is wider than the outer — holds both cards
+# Inner frame — 3 panels wide (spotify / discord / style)
 slide_inner = ctk.CTkFrame(slide_container_outer, fg_color="transparent")
-slide_inner.place(x=0, y=0, relwidth=2.0, relheight=1.0)
+slide_inner.place(x=0, y=0, relwidth=3.0, relheight=1.0)
 
-# Build both cards inside slide_inner side by side
-_slide_x     = [0]         # current x offset of slide_inner
+# Build all cards inside slide_inner side by side
+_slide_x     = [0]
 _slide_target= [0]
 _slide_animating = [False]
-_CARD_WIDTH  = 560          # approximate — will be updated on configure
+_CARD_WIDTH  = 560
 
 def _animate_slide():
     cur = _slide_x[0]
@@ -1760,18 +1836,22 @@ def switch_to_source(source):
     active_source = source
     save_settings()
     w = slide_container_outer.winfo_width() or 520
-    target = 0 if source == "spotify" else -w
+    if source == "spotify":
+        target = 0
+    elif source == "discord":
+        target = -w
+    else:  # style
+        target = -w * 2
     _slide_target[0] = target
     if not _slide_animating[0]:
         _slide_animating[0] = True
         _animate_slide()
-    # Update tab button states
-    if source == "spotify":
-        tab_spotify_btn.configure(fg_color=ACCENT, text_color="#fff")
-        tab_discord_btn.configure(fg_color=BORDER, text_color=TEXT_MUTED)
-    else:
-        tab_discord_btn.configure(fg_color=DISCORD_BLUE, text_color="#fff")
-        tab_spotify_btn.configure(fg_color=BORDER, text_color=TEXT_MUTED)
+    tab_spotify_btn.configure(fg_color=ACCENT       if source=="spotify" else BORDER,
+                               text_color="#fff"     if source=="spotify" else TEXT_MUTED)
+    tab_discord_btn.configure(fg_color=DISCORD_BLUE if source=="discord" else BORDER,
+                               text_color="#fff"     if source=="discord" else TEXT_MUTED)
+    tab_style_btn.configure(  fg_color="#7c3aed"    if source=="style"   else BORDER,
+                               text_color="#fff"     if source=="style"   else TEXT_MUTED)
 
 # ── Tab switcher buttons ──
 tab_row = ctk.CTkFrame(body, fg_color="transparent")
@@ -1791,21 +1871,34 @@ tab_discord_btn = ctk.CTkButton(
     text_color=TEXT_MUTED, corner_radius=8, height=28,
     command=lambda: switch_to_source("discord")
 )
-tab_discord_btn.pack(side="left", expand=True, fill="x")
+tab_discord_btn.pack(side="left", expand=True, fill="x", padx=(4, 4))
+
+tab_style_btn = ctk.CTkButton(
+    tab_row, text="✦  Style", font=("Segoe UI", 11, "bold"),
+    fg_color=BORDER, hover_color="#5b21b6",
+    text_color=TEXT_MUTED, corner_radius=8, height=28,
+    command=lambda: switch_to_source("style")
+)
+tab_style_btn.pack(side="left", expand=True, fill="x")
 
 # Height holder so container has a size
-slide_container_outer.configure(height=120)
+slide_container_outer.configure(height=240)
 slide_container_outer.pack_propagate(False)
 
-# ── Spotify panel (left half of slide_inner) ──
+# ── Spotify panel (1st third of slide_inner) ──
 spotify_panel = ctk.CTkFrame(slide_inner, fg_color="#0d1f12", corner_radius=12,
                               border_width=1, border_color="#1c3828")
-spotify_panel.place(relx=0, rely=0, relwidth=0.5, relheight=1.0)
+spotify_panel.place(relx=0, rely=0, relwidth=0.333, relheight=1.0)
 
-# ── Discord panel (right half of slide_inner) ──
+# ── Discord panel (2nd third of slide_inner) ──
 discord_panel = ctk.CTkFrame(slide_inner, fg_color=DISCORD_DARK, corner_radius=12,
                               border_width=1, border_color=DISCORD_BORDER)
-discord_panel.place(relx=0.5, rely=0, relwidth=0.5, relheight=1.0)
+discord_panel.place(relx=0.333, rely=0, relwidth=0.333, relheight=1.0)
+
+# ── Style panel (3rd third of slide_inner) ──
+style_panel = ctk.CTkFrame(slide_inner, fg_color="#1a0e2e", corner_radius=12,
+                            border_width=1, border_color="#3b1f6e")
+style_panel.place(relx=0.666, rely=0, relwidth=0.333, relheight=1.0)
 
 # ─────────────────────────────────────────
 # Spotify card contents (inside spotify_panel)
@@ -1906,6 +1999,203 @@ discord_banner_btn = ctk.CTkButton(
 )
 discord_banner_btn.pack(side="left")
 
+# ─────────────────────────────────────────
+# Style panel contents
+# ─────────────────────────────────────────
+sty_header = ctk.CTkFrame(style_panel, fg_color="transparent")
+sty_header.place(x=14, y=10)
+ctk.CTkLabel(sty_header, text="✦", font=("Segoe UI", 13), text_color="#a78bfa").pack(side="left", padx=(0,5))
+ctk.CTkLabel(sty_header, text="STYLE", font=("Segoe UI", 9, "bold"), text_color="#a78bfa").pack(side="left")
+
+# Preview label
+style_preview = ctk.CTkLabel(style_panel, text="",
+    font=("Consolas", 9), text_color="#c4b5fd", anchor="w",
+    wraplength=240, justify="left")
+style_preview.place(x=14, y=30)
+
+def refresh_style_preview(*_):
+    sample = format_caption("Hello VRChat")
+    style_preview.configure(text=sample[:120])
+
+# ── Row 1: Border char buttons ──
+border_row = ctk.CTkFrame(style_panel, fg_color="transparent")
+border_row.place(x=14, y=88, relwidth=0.93)
+
+BORDER_OPTIONS = ["~", "#", "*", "=", "-", "none"]
+
+def _set_border(ch):
+    global style_border_char, style_border_on
+    if ch == "none":
+        style_border_on = False
+    else:
+        style_border_on  = True
+        style_border_char = ch
+    save_settings()
+    refresh_style_preview()
+    _safe_refresh()
+    for b, opt in _border_btns:
+        active = (opt == ch and ch != "none") or (opt == "none" and not style_border_on)
+        b.configure(fg_color="#7c3aed" if active else BORDER,
+                    text_color="#fff"  if active else TEXT_MUTED)
+
+_border_btns = []
+for opt in BORDER_OPTIONS:
+    label = "off" if opt == "none" else opt*2
+    btn = ctk.CTkButton(border_row, text=label, width=38, height=22,
+                        font=("Consolas", 10, "bold"),
+                        fg_color=BORDER, hover_color="#5b21b6",
+                        text_color=TEXT_MUTED, corner_radius=5,
+                        command=lambda o=opt: _set_border(o))
+    btn.pack(side="left", padx=2)
+    _border_btns.append((btn, opt))
+
+# Custom border char entry
+custom_border_entry = ctk.CTkEntry(border_row, width=38, height=22,
+    font=("Consolas", 11), fg_color=SURFACE, border_color=BORDER,
+    border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
+    placeholder_text="?", placeholder_text_color=TEXT_MUTED)
+custom_border_entry.pack(side="left", padx=2)
+
+def _apply_custom_border(e=None):
+    ch = custom_border_entry.get().strip()
+    if ch:
+        _set_border(ch[:1])
+custom_border_entry.bind("<Return>", _apply_custom_border)
+custom_border_entry.bind("<FocusOut>", _apply_custom_border)
+
+# ── Row 2: Padding + time format ──
+mid_row = ctk.CTkFrame(style_panel, fg_color="transparent")
+mid_row.place(x=14, y=118, relwidth=0.93)
+
+ctk.CTkLabel(mid_row, text="pad", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
+pad_var = ctk.StringVar(value=str(style_padding))
+pad_spin = ctk.CTkEntry(mid_row, width=36, height=22, textvariable=pad_var,
+    font=("Consolas", 11), fg_color=SURFACE, border_color=BORDER,
+    border_width=1, text_color=TEXT_PRIMARY, corner_radius=5)
+pad_spin.pack(side="left", padx=(4, 12))
+
+def _pad_changed(e=None):
+    global style_padding
+    try:
+        style_padding = max(0, min(10, int(pad_var.get())))
+        save_settings(); refresh_style_preview()
+    except: pass
+pad_spin.bind("<Return>", _pad_changed)
+pad_spin.bind("<FocusOut>", _pad_changed)
+
+ctk.CTkLabel(mid_row, text="time", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
+TIME_OPTS = [("off","none"),("12h","12hr"),("24h","24hr"),("D+T","datetime")]
+_time_btns = []
+for label, val in TIME_OPTS:
+    tb = ctk.CTkButton(mid_row, text=label, width=36, height=22,
+                       font=("Segoe UI", 9, "bold"),
+                       fg_color="#7c3aed" if style_time_format==val else BORDER,
+                       hover_color="#5b21b6",
+                       text_color="#fff" if style_time_format==val else TEXT_MUTED,
+                       corner_radius=5,
+                       command=lambda v=val: _set_time(v))
+    tb.pack(side="left", padx=2)
+    _time_btns.append((tb, val))
+
+def _set_time(val):
+    global style_time_format
+    style_time_format = val
+    save_settings(); refresh_style_preview(); _safe_refresh()
+    for b, v in _time_btns:
+        b.configure(fg_color="#7c3aed" if v==val else BORDER,
+                    text_color="#fff"  if v==val else TEXT_MUTED)
+
+# ── Row 3: Prefix / Suffix ──
+fix_row = ctk.CTkFrame(style_panel, fg_color="transparent")
+fix_row.place(x=14, y=146, relwidth=0.93)
+
+ctk.CTkLabel(fix_row, text="pre", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
+prefix_entry = ctk.CTkEntry(fix_row, width=62, height=22,
+    font=("Segoe UI", 11), fg_color=SURFACE, border_color=BORDER,
+    border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
+    placeholder_text="🎵", placeholder_text_color=TEXT_MUTED)
+prefix_entry.insert(0, style_prefix)
+prefix_entry.pack(side="left", padx=(4,10))
+
+ctk.CTkLabel(fix_row, text="suf", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
+suffix_entry = ctk.CTkEntry(fix_row, width=62, height=22,
+    font=("Segoe UI", 11), fg_color=SURFACE, border_color=BORDER,
+    border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
+    placeholder_text="✨", placeholder_text_color=TEXT_MUTED)
+suffix_entry.insert(0, style_suffix)
+suffix_entry.pack(side="left", padx=(4,0))
+
+def _fix_changed(e=None):
+    global style_prefix, style_suffix
+    style_prefix = prefix_entry.get()
+    style_suffix = suffix_entry.get()
+    save_settings(); refresh_style_preview(); _safe_refresh()
+prefix_entry.bind("<KeyRelease>", _fix_changed)
+suffix_entry.bind("<KeyRelease>", _fix_changed)
+
+# ── Row 4: Template ──
+tpl_row = ctk.CTkFrame(style_panel, fg_color="transparent")
+tpl_row.place(x=14, y=172, relwidth=0.93)
+
+ctk.CTkLabel(tpl_row, text="tpl", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
+tpl_entry = ctk.CTkEntry(tpl_row, height=22,
+    font=("Consolas", 9), fg_color=SURFACE, border_color=BORDER,
+    border_width=1, text_color=TEXT_PRIMARY, corner_radius=5,
+    placeholder_text="{text} | {time}", placeholder_text_color=TEXT_MUTED)
+tpl_entry.insert(0, style_template)
+tpl_entry.pack(side="left", expand=True, fill="x", padx=(4,0))
+
+def _tpl_changed(e=None):
+    global style_template
+    t = tpl_entry.get().strip()
+    style_template = t if t else "{text}"
+    save_settings(); refresh_style_preview(); _safe_refresh()
+tpl_entry.bind("<KeyRelease>", _tpl_changed)
+
+# ── Row 5: Add to Captions ──
+add_row = ctk.CTkFrame(style_panel, fg_color="transparent")
+add_row.place(x=14, y=198, relwidth=0.93)
+
+style_caption_entry = ctk.CTkEntry(add_row, height=26,
+    font=("Segoe UI", 11), fg_color=SURFACE, border_color="#3b1f6e",
+    border_width=1, text_color=TEXT_PRIMARY, corner_radius=6,
+    placeholder_text="type caption…", placeholder_text_color=TEXT_MUTED)
+style_caption_entry.pack(side="left", expand=True, fill="x", padx=(0, 6))
+
+def _style_add_caption(e=None):
+    raw = style_caption_entry.get().strip()
+    if not raw:
+        return
+    captions.append(raw)
+    style_caption_entry.delete(0, "end")
+    try:
+        refresh_list()
+        save_json()
+        list_scroll.after(50, lambda: list_scroll._parent_canvas.yview_moveto(1.0))
+    except: pass
+
+style_caption_entry.bind("<Return>", _style_add_caption)
+
+ctk.CTkButton(add_row, text="+ Add", width=60, height=26,
+    font=("Segoe UI", 10, "bold"),
+    fg_color="#7c3aed", hover_color="#5b21b6",
+    text_color="#fff", corner_radius=6,
+    command=_style_add_caption).pack(side="left")
+
+def _safe_refresh():
+    """Call after full UI is built — refreshes list and entry preview."""
+    try:
+        refresh_list()
+    except: pass
+    try:
+        _update_entry_preview()
+    except: pass
+
+# Init preview and button states
+refresh_style_preview()
+_set_border(style_border_char if style_border_on else "none")
+_set_time(style_time_format)
+
 # Set initial tab position based on saved preference
 app.after(200, lambda: switch_to_source(active_source))
 
@@ -1949,7 +2239,7 @@ ip_status = ctk.CTkLabel(ip_row, text="", font=("Segoe UI", 10),
 ip_status.pack(side="left", padx=(8, 0))
 
 # ── Caption Input ──
-input_frame = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=50)
+input_frame = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, height=78)
 input_frame.pack(fill="x", pady=(0, 8))
 input_frame.pack_propagate(False)
 
@@ -1960,7 +2250,7 @@ entry = ctk.CTkEntry(
     fg_color="transparent", border_width=0,
     text_color=TEXT_PRIMARY, placeholder_text_color=TEXT_MUTED
 )
-entry.place(x=12, rely=0.5, anchor="w", relwidth=0.82)
+entry.place(x=12, y=10, relwidth=0.82)
 entry.bind("<Return>", on_entry_return)
 
 add_btn = ctk.CTkButton(
@@ -1969,7 +2259,30 @@ add_btn = ctk.CTkButton(
     fg_color=ACCENT, hover_color="#1d4ed8", corner_radius=8,
     command=add_caption
 )
-add_btn.place(relx=1.0, x=-10, rely=0.5, anchor="e")
+add_btn.place(relx=1.0, x=-10, y=10, anchor="ne")
+
+# Styled preview under the entry
+entry_preview_lbl = ctk.CTkLabel(
+    input_frame, text="", font=("Consolas", 8),
+    text_color="#a78bfa", anchor="w"
+)
+entry_preview_lbl.place(x=12, y=44, relwidth=0.95)
+
+def _update_entry_preview(*_):
+    try:
+        entry_preview_lbl.winfo_exists()
+    except NameError:
+        return
+    raw = entry.get().strip()
+    if not raw:
+        entry_preview_lbl.configure(text="")
+        return
+    preview = format_caption(raw).replace("\n", "  ").strip()
+    if len(preview) > 72:
+        preview = preview[:69] + "..."
+    entry_preview_lbl.configure(text=preview)
+
+entry.bind("<KeyRelease>", _update_entry_preview)
 
 # ── Caption List ──
 list_header_row = ctk.CTkFrame(body, fg_color="transparent")
