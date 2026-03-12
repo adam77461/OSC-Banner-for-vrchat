@@ -361,33 +361,66 @@ def caption_style(c):
 def format_caption(text, style=None):
     """Format text using a style snapshot dict, or plain if None."""
     if style is None:
-        return text  # no style — send raw
+        # Resolve tokens for plain captions too
+        t = datetime.now().strftime("%H:%M")
+        song    = spotify_now_playing or ""
+        discord = discord_username    or ""
+        return (text
+            .replace("{time}",    datetime.now().strftime("%H:%M"))  # plain default = 24hr
+            .replace("{song}",    song)
+            .replace("{discord}", discord)
+            .replace("\\n",     "\n"))
 
-    bc  = style.get("border_char", "~")
-    bon = style.get("border_on", False)
-    pad = style.get("padding", 2)
-    tf  = style.get("time_format", "none")
-    pre = style.get("prefix", "")
-    suf = style.get("suffix", "")
-    tpl = style.get("template", "{text}")
+    bc     = style.get("border_char", "~")
+    bon    = style.get("border_on", False)
+    pad    = style.get("padding", 2)
+    tf     = style.get("time_format", "none")
+    pre    = style.get("prefix", "")
+    suf    = style.get("suffix", "")
+    tpl    = style.get("template", "{text}")
+    center = style.get("center", False)
 
     t = ""
-    if tf == "12hr":       t = datetime.now().strftime("%I:%M %p").lstrip("0")
-    elif tf == "24hr":     t = datetime.now().strftime("%H:%M")
-    elif tf == "datetime": t = datetime.now().strftime("%b %d %H:%M")
+    now = datetime.now()
+    if   tf == "12hr":        t = now.strftime("%I:%M %p").lstrip("0")
+    elif tf == "12hr_noampm": t = now.strftime("%I:%M").lstrip("0")
+    elif tf == "24hr":        t = now.strftime("%H:%M")
+    elif tf == "date":        t = now.strftime("%b %d")
+    elif tf == "date_full":   t = now.strftime("%B %d, %Y")
+    elif tf == "datetime12":  t = now.strftime("%b %d  %I:%M %p").lstrip("0")
+    elif tf == "datetime24":  t = now.strftime("%b %d  %H:%M")
 
-    body = text.replace("{time}", t)
+    song    = spotify_now_playing or ""
+    discord = discord_username or ""
+    body = text.replace("{time}", t).replace("{song}", song).replace("{discord}", discord)
     result = tpl.replace("{text}", body).replace("{time}", t)
+    result = result.replace("{song}", song).replace("{discord}", discord)
     result = result.replace("{prefix}", pre).replace("{suffix}", suf)
     if pre and pre not in result: result = pre + result
     if suf and suf not in result: result = result + suf
-    result = result.strip()
+    # Resolve \n tokens into real newlines
+    result = result.replace("\\n", "\n").strip()
 
     if not bon or not bc:
+        if center:
+            lines = result.split("\n")
+            max_w = max(len(l) for l in lines) if lines else 0
+            result = "\n".join(l.center(max_w) for l in lines)
         return result
-    padding = " " * pad
-    middle  = padding + result + padding
-    border  = bc * len(middle)
+
+    # Build bordered output — handle multi-line bodies
+    lines  = result.split("\n")
+    max_w  = max(len(l) for l in lines) if lines else 0
+    inner_w = max_w + pad * 2
+    border  = bc * inner_w
+    rows = []
+    for line in lines:
+        if center:
+            padded = line.center(max_w)
+        else:
+            padded = line
+        rows.append((" " * pad) + padded + (" " * pad))
+    middle = "\n".join(rows)
     return f"{border}\n{middle}\n{border}"
 
 def send_caption(text, style=None):
@@ -1871,7 +1904,7 @@ tab_style_btn = ctk.CTkButton(
 tab_style_btn.pack(side="left", expand=True, fill="x")
 
 # Height holder so container has a size
-slide_container_outer.configure(height=240)
+slide_container_outer.configure(height=260)
 slide_container_outer.pack_propagate(False)
 
 # ── Spotify panel (1st third of slide_inner) ──
@@ -2005,6 +2038,7 @@ _c_time_format  = ["none"]
 _c_prefix       = [""]
 _c_suffix       = [""]
 _c_template     = ["{text}"]
+_c_center       = [False]
 
 def _c_snapshot():
     return {
@@ -2015,6 +2049,7 @@ def _c_snapshot():
         "prefix":       _c_prefix[0],
         "suffix":       _c_suffix[0],
         "template":     _c_template[0],
+        "center":       _c_center[0],
     }
 
 # Preview label
@@ -2095,17 +2130,29 @@ pad_spin.bind("<Return>", _pad_changed)
 pad_spin.bind("<FocusOut>", _pad_changed)
 
 ctk.CTkLabel(mid_row, text="time", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left")
-TIME_OPTS = [("off","none"),("12h","12hr"),("24h","24hr"),("D+T","datetime")]
+# Time row spans two sub-rows for all options
+ctk.CTkLabel(mid_row, text="time", font=("Segoe UI", 9), text_color=TEXT_MUTED).pack(side="left", padx=(0,4))
+
+TIME_OPTS = [
+    ("off",     "none"),
+    ("12h",     "12hr"),
+    ("12h-",    "12hr_noampm"),
+    ("24h",     "24hr"),
+    ("date",    "date"),
+    ("D long",  "date_full"),
+    ("D+12h",   "datetime12"),
+    ("D+24h",   "datetime24"),
+]
 _time_btns = []
 for label, val in TIME_OPTS:
-    tb = ctk.CTkButton(mid_row, text=label, width=36, height=22,
-                       font=("Segoe UI", 9, "bold"),
+    tb = ctk.CTkButton(mid_row, text=label, width=46, height=22,
+                       font=("Segoe UI", 8, "bold"),
                        fg_color="#7c3aed" if _c_time_format[0]==val else BORDER,
                        hover_color="#5b21b6",
                        text_color="#fff" if _c_time_format[0]==val else TEXT_MUTED,
                        corner_radius=5,
                        command=lambda v=val: _set_time(v))
-    tb.pack(side="left", padx=2)
+    tb.pack(side="left", padx=1)
     _time_btns.append((tb, val))
 
 def _set_time(val):
@@ -2162,12 +2209,12 @@ tpl_entry.bind("<KeyRelease>", _tpl_changed)
 
 # ── Row 5: Add to Captions ──
 add_row = ctk.CTkFrame(style_panel, fg_color="transparent")
-add_row.place(x=14, y=192, relwidth=0.93)
+add_row.place(x=14, y=218, relwidth=0.93)
 
 style_caption_entry = ctk.CTkEntry(add_row, height=26,
     font=("Segoe UI", 11), fg_color=SURFACE, border_color="#3b1f6e",
     border_width=1, text_color=TEXT_PRIMARY, corner_radius=6,
-    placeholder_text="type caption…", placeholder_text_color=TEXT_MUTED)
+    placeholder_text="{text} {song} {time} {discord} \\n", placeholder_text_color=TEXT_MUTED)
 style_caption_entry.pack(side="left", expand=True, fill="x", padx=(0, 6))
 
 def _style_add_caption(e=None):
@@ -2244,7 +2291,7 @@ input_frame.pack_propagate(False)
 
 entry = ctk.CTkEntry(
     input_frame,
-    placeholder_text="New caption… use {time} for clock",
+    placeholder_text="New caption… {time} {song} {discord} \\n",
     font=("Segoe UI", 12),
     fg_color="transparent", border_width=0,
     text_color=TEXT_PRIMARY, placeholder_text_color=TEXT_MUTED
